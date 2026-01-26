@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.md
+*_test.go
+test/
+tests/
+.env
+.env.*
+server
+tmp/
+*.log
