@@ -683,11 +683,17 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 			m.month,
 			COALESCE(COUNT(DISTINCT u.id), 0) AS users_count,
 			COALESCE(COUNT(DISTINCT j.id), 0) AS orders_count,
-			COALESCE(SUM(p.amount), 0) AS revenue
+			COALESCE((
+				SELECT SUM(p2.amount)
+				FROM cp.payments p2
+				INNER JOIN cp.jobs j2 ON p2.job_id = j2.id
+				WHERE j2.type = 'assignment-gen'
+					AND p2.status = 'completed'
+					AND to_char(p2.created_at, 'YYYY-MM') = m.month
+			), 0) AS revenue
 		FROM months m
 		LEFT JOIN "user" u ON to_char(u.created_at, 'YYYY-MM') = m.month
 		LEFT JOIN cp.jobs j ON to_char(j.created_at, 'YYYY-MM') = m.month AND j.type = 'assignment-gen'
-		LEFT JOIN cp.payments p ON p.job_id = j.id AND p.status = 'completed' AND to_char(p.created_at, 'YYYY-MM') = m.month
 		GROUP BY m.month
 		ORDER BY m.month
 	`)
