@@ -91,20 +91,34 @@ func main() {
 	wf := &workflow.Service{Store: st, Publisher: pub}
 	readyChecker := &ready.Checker{DB: db, RabbitMQURL: rabbitURL}
 	
-	razorpayKey := os.Getenv("RAZORPAY_KEY_ID")
-	razorpaySecret := os.Getenv("RAZORPAY_KEY_SECRET")
+	// Razorpay configuration: support test/prod mode switching
+	razorpayMode := os.Getenv("RAZORPAY_MODE")
+	if razorpayMode == "" {
+		razorpayMode = "test" // Default to test mode
+	}
+	
+	var razorpayKey, razorpaySecret string
+	if razorpayMode == "prod" || razorpayMode == "production" {
+		razorpayKey = os.Getenv("RAZORPAY_KEY_PROD_ID")
+		razorpaySecret = os.Getenv("RAZORPAY_KEY_PROD_SECRET")
+		slog.Info("Razorpay mode: PRODUCTION")
+	} else {
+		razorpayKey = os.Getenv("RAZORPAY_KEY_TEST_ID")
+		razorpaySecret = os.Getenv("RAZORPAY_KEY_TEST_SECRET")
+		slog.Info("Razorpay mode: TEST")
+	}
 	
 	if razorpayKey == "" {
-		slog.Warn("RAZORPAY_KEY_ID not set - payment functionality will not work")
+		slog.Warn("Razorpay key not set - payment functionality will not work", "mode", razorpayMode)
 	} else {
 		keyPreview := razorpayKey
 		if len(keyPreview) > 10 {
 			keyPreview = keyPreview[:10]
 		}
-		slog.Info("Razorpay keys loaded", "key_id", keyPreview+"...")
+		slog.Info("Razorpay keys loaded", "key_id", keyPreview+"...", "mode", razorpayMode)
 	}
 	if razorpaySecret == "" {
-		slog.Warn("RAZORPAY_KEY_SECRET not set - payment signature verification will not work")
+		slog.Warn("Razorpay secret not set - payment signature verification will not work", "mode", razorpayMode)
 	}
 	
 	h := &api.Handler{

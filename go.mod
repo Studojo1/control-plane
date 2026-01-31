@@ -1,6 +1,6 @@
 module github.com/studojo/control-plane
 
-go 1.25.6
+go 1.25
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
