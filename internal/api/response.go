@@ -14,6 +14,7 @@ const (
 	ErrInvalidIdempotencyKey ErrorCode = "invalid_idempotency_key"
 	ErrValidationFailed      ErrorCode = "validation_failed"
 	ErrJobNotFound           ErrorCode = "job_not_found"
+	ErrNotFound              ErrorCode = "not_found"
 	ErrPaymentRequired       ErrorCode = "payment_required"
 	ErrPaymentFailed         ErrorCode = "payment_failed"
 	ErrInternal              ErrorCode = "internal_error"

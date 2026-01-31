@@ -54,7 +54,8 @@ func main() {
 	}
 	corsOrigins := strings.Split(os.Getenv("CORS_ORIGINS"), ",")
 	if len(corsOrigins) == 1 && strings.TrimSpace(corsOrigins[0]) == "" {
-		corsOrigins = []string{"http://localhost:3000", "http://127.0.0.1:3000"}
+		// Default to allow both frontend and admin panel in development
+		corsOrigins = []string{"http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"}
 	}
 
 	if err := store.Migrate(dbURL); err != nil {
@@ -129,8 +130,13 @@ func main() {
 		RazorpaySecret: razorpaySecret,
 	}
 
+	adminH := &api.AdminHandler{
+		DB: db,
+	}
+
 	jwks := auth.NewJWKSClient(jwksURL, nil)
 	authMW := &auth.Middleware{JWKS: jwks}
+	adminMW := &auth.AdminMiddleware{JWKS: jwks, DB: db}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.HandleHealth)
@@ -142,6 +148,14 @@ func main() {
 	mux.Handle("POST /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleSubmitJob)))
 	mux.Handle("GET /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleListJobs)))
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
+	
+	// Admin routes
+	mux.Handle("GET /v1/admin/users", adminMW.Wrap(http.HandlerFunc(adminH.HandleListUsers)))
+	mux.Handle("GET /v1/admin/users/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetUser)))
+	mux.Handle("PATCH /v1/admin/users/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleUpdateUser)))
+	mux.Handle("GET /v1/admin/dissertations", adminMW.Wrap(http.HandlerFunc(adminH.HandleListDissertations)))
+	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
+	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
 
 	stack := api.CORS(corsOrigins)(api.CorrelationID(api.Logging(mux)))
 
