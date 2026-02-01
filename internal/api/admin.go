@@ -487,10 +487,11 @@ func (h *AdminHandler) HandleListCareers(w http.ResponseWriter, r *http.Request)
 
 // MonthMetric represents metrics for a single month.
 type MonthMetric struct {
-	Month       string `json:"month"`        // Format: "YYYY-MM"
-	UsersCount  int64  `json:"users_count"`
-	OrdersCount int64  `json:"orders_count"`
-	Revenue     int64  `json:"revenue"`      // In paise
+	Month            string `json:"month"`              // Format: "YYYY-MM"
+	UsersCount       int64  `json:"users_count"`
+	OrdersCount      int64  `json:"orders_count"`
+	DissertationsCount int64  `json:"dissertations_count"`
+	Revenue          int64  `json:"revenue"`            // In paise
 }
 
 // AssignmentOrder represents an assignment order with payment info.
@@ -683,6 +684,7 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 			m.month,
 			COALESCE(COUNT(DISTINCT u.id), 0) AS users_count,
 			COALESCE(COUNT(DISTINCT j.id), 0) AS orders_count,
+			COALESCE(COUNT(DISTINCT d.id), 0) AS dissertations_count,
 			COALESCE((
 				SELECT SUM(p2.amount)
 				FROM cp.payments p2
@@ -694,6 +696,7 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 		FROM months m
 		LEFT JOIN "user" u ON to_char(u.created_at, 'YYYY-MM') = m.month
 		LEFT JOIN cp.jobs j ON to_char(j.created_at, 'YYYY-MM') = m.month AND j.type = 'assignment-gen'
+		LEFT JOIN "dissertation_submissions" d ON to_char(d.created_at, 'YYYY-MM') = m.month
 		GROUP BY m.month
 		ORDER BY m.month
 	`)
@@ -705,7 +708,7 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 		stats.MonthlyMetrics = []MonthMetric{}
 		for rows.Next() {
 			var m MonthMetric
-			err := rows.Scan(&m.Month, &m.UsersCount, &m.OrdersCount, &m.Revenue)
+			err := rows.Scan(&m.Month, &m.UsersCount, &m.OrdersCount, &m.DissertationsCount, &m.Revenue)
 			if err != nil {
 				slog.Error("failed to scan monthly metric", "error", err)
 				continue
