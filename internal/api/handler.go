@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	razorpay "github.com/razorpay/razorpay-go"
 	"github.com/studojo/control-plane/internal/auth"
+	"github.com/studojo/control-plane/internal/pricing"
 	"github.com/studojo/control-plane/internal/store"
 	"github.com/studojo/control-plane/internal/workflow"
 )
@@ -103,7 +104,9 @@ type PaymentVerifyResponse struct {
 
 // PaymentCreateRequest JSON body for POST /v1/payments/create-order.
 type PaymentCreateRequest struct {
-	Amount int `json:"amount"` // Amount in paise (e.g., 13900 for ₹139)
+	Amount  int             `json:"amount"`   // Amount in paise (e.g., 13900 for ₹139)
+	JobType string          `json:"job_type,omitempty"` // Optional: "assignment-gen" or "humanizer" for price calculation
+	Payload json.RawMessage `json:"payload,omitempty"`  // Optional: for humanizer word count estimation
 }
 
 // PaymentCreateResponse JSON response for POST /v1/payments/create-order.
@@ -151,8 +154,8 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// For assignment-gen type, payment is required. For outline-gen and outline-edit, no payment needed.
-	if req.Type == "assignment-gen" {
+	// For assignment-gen and humanizer types, payment is required. For outline-gen and outline-edit, no payment needed.
+	if req.Type == "assignment-gen" || req.Type == "humanizer" {
 		// Verify payment before creating job
 		if req.PaymentOrderID == "" {
 			WriteError(w, http.StatusPaymentRequired, ErrPaymentRequired, "payment_order_id is required")
@@ -209,8 +212,8 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Link payment to job after job is created (only for assignment-gen)
-	if req.Type == "assignment-gen" {
+	// Link payment to job after job is created (for assignment-gen and humanizer)
+	if req.Type == "assignment-gen" || req.Type == "humanizer" {
 		payment, _ := h.PaymentStore.GetPaymentByOrderID(r.Context(), req.PaymentOrderID)
 		if payment != nil {
 			jobID, err := uuid.Parse(res.JobID)
@@ -465,6 +468,23 @@ func (h *Handler) HandleCreatePaymentOrder(w http.ResponseWriter, r *http.Reques
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "invalid JSON body")
 		return
+	}
+
+	// If job_type is humanizer and payload is provided, calculate price dynamically
+	if req.JobType == "humanizer" && len(req.Payload) > 0 {
+		wordCount, err := pricing.EstimateWordCountFromPayload(req.Payload)
+		if err != nil {
+			slog.Warn("failed to estimate word count, using provided amount", "error", err)
+		} else {
+			calculatedAmount := pricing.CalculateHumanizerPrice(wordCount)
+			if req.Amount <= 0 {
+				req.Amount = calculatedAmount
+			} else if req.Amount < calculatedAmount {
+				slog.Warn("provided amount is less than calculated amount, using calculated", "provided", req.Amount, "calculated", calculatedAmount)
+				// Use calculated amount for security (prevent underpayment)
+				req.Amount = calculatedAmount
+			}
+		}
 	}
 
 	if req.Amount <= 0 {

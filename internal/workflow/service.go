@@ -25,7 +25,7 @@ func (s *Service) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*Submit
 		return nil, ErrValidation
 	}
 	// Supported types for routing
-	if req.Type != "assignment-gen" && req.Type != "outline-gen" && req.Type != "outline-edit" && req.Type != "resume-gen" && req.Type != "resume-optimize" {
+	if req.Type != "assignment-gen" && req.Type != "outline-gen" && req.Type != "outline-edit" && req.Type != "resume-gen" && req.Type != "resume-optimize" && req.Type != "humanizer" {
 		return nil, ErrValidation
 	}
 
