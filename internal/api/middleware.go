@@ -45,6 +45,25 @@ func Logging(next http.Handler) http.Handler {
 	})
 }
 
+// SecurityHeaders adds security headers to all responses
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Prevent clickjacking
+		w.Header().Set("X-Frame-Options", "DENY")
+		// Prevent MIME type sniffing
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// XSS protection (legacy but still useful)
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		// HSTS - only set if using HTTPS
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		// Basic CSP - can be customized per application
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // CORS sets Access-Control-* headers. Use trusted origins in production.
 func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 	origins := make(map[string]bool)

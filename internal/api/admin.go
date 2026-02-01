@@ -279,30 +279,44 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Build update query dynamically
+	// Whitelist of allowed field names for UPDATE queries
+	// This prevents SQL injection if field names are ever derived from user input
+	allowedFields := map[string]bool{
+		"role":        true,
+		"banned":      true,
+		"ban_reason":  true,
+		"ban_expires": true,
+		"updated_at":  true,
+	}
+
+	// Build update query dynamically with whitelist validation
 	updates := []string{"updated_at = $1"}
 	args := []interface{}{time.Now().UTC()}
 	argIdx := 2
 
-	if req.Role != nil {
-		updates = append(updates, "role = $"+strconv.Itoa(argIdx))
-		args = append(args, *req.Role)
+	// Helper function to safely add field updates
+	addFieldUpdate := func(fieldName string, value interface{}) {
+		// Validate field name against whitelist
+		if !allowedFields[fieldName] {
+			slog.Warn("attempted to update non-whitelisted field", "field", fieldName)
+			return // Skip non-whitelisted fields
+		}
+		updates = append(updates, fieldName+" = $"+strconv.Itoa(argIdx))
+		args = append(args, value)
 		argIdx++
+	}
+
+	if req.Role != nil {
+		addFieldUpdate("role", *req.Role)
 	}
 	if req.Banned != nil {
-		updates = append(updates, "banned = $"+strconv.Itoa(argIdx))
-		args = append(args, *req.Banned)
-		argIdx++
+		addFieldUpdate("banned", *req.Banned)
 	}
 	if req.BanReason != nil {
-		updates = append(updates, "ban_reason = $"+strconv.Itoa(argIdx))
-		args = append(args, *req.BanReason)
-		argIdx++
+		addFieldUpdate("ban_reason", *req.BanReason)
 	}
 	if req.BanExpires != nil {
-		updates = append(updates, "ban_expires = $"+strconv.Itoa(argIdx))
-		args = append(args, *req.BanExpires)
-		argIdx++
+		addFieldUpdate("ban_expires", *req.BanExpires)
 	}
 
 	if len(updates) == 1 {

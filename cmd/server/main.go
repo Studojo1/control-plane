@@ -138,6 +138,16 @@ func main() {
 	authMW := &auth.Middleware{JWKS: jwks}
 	adminMW := &auth.AdminMiddleware{JWKS: jwks, DB: db}
 
+	// Initialize rate limiter
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379"
+	}
+	rateLimiter, err := api.NewRateLimiter(redisURL)
+	if err != nil {
+		slog.Warn("rate limiter initialization failed, continuing without rate limiting", "error", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.HandleHealth)
 	mux.HandleFunc("GET /ready", h.HandleReady)
@@ -157,7 +167,14 @@ func main() {
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
 
-	stack := api.CORS(corsOrigins)(api.CorrelationID(api.Logging(mux)))
+	// Build middleware stack: SecurityHeaders -> CORS -> RateLimit -> CorrelationID -> Logging -> Routes
+	stack := http.Handler(mux)
+	stack = api.SecurityHeaders(stack)
+	if rateLimiter != nil {
+		stack = rateLimiter.RateLimit(stack)
+	}
+	stack = api.CorrelationID(api.Logging(stack))
+	stack = api.CORS(corsOrigins)(stack)
 
 	consumer := messaging.NewRabbitConsumer(msgCfg, wf)
 	ctx, stop := context.WithCancel(context.Background())
