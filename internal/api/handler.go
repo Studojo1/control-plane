@@ -80,6 +80,7 @@ type SubmitResponse struct {
 // JobResponseJSON JSON response for GET /v1/jobs/:id.
 type JobResponseJSON struct {
 	JobID     string `json:"job_id"`
+	Type      string `json:"type"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -256,13 +257,14 @@ func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 		h.writeWorkflowError(w, err)
 		return
 	}
-	out := JobResponseJSON{
-		JobID:     res.JobID,
-		Status:    res.Status,
-		CreatedAt: res.CreatedAt,
-		UpdatedAt: res.UpdatedAt,
-		Result:    res.Result,
-	}
+		out := JobResponseJSON{
+			JobID:     res.JobID,
+			Type:      res.Type,
+			Status:    res.Status,
+			CreatedAt: res.CreatedAt,
+			UpdatedAt: res.UpdatedAt,
+			Result:    res.Result,
+		}
 	if res.Error != nil {
 		out.Error = *res.Error
 	}
@@ -308,6 +310,7 @@ func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
 	for _, job := range jobs {
 		out := JobResponseJSON{
 			JobID:     job.JobID,
+			Type:      job.Type,
 			Status:    job.Status,
 			CreatedAt: job.CreatedAt,
 			UpdatedAt: job.UpdatedAt,

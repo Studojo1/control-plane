@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/studojo/control-plane/internal/auth"
@@ -11,7 +10,7 @@ import (
 
 // HumanizerPriceRequest JSON body for POST /v1/humanizer/calculate-price.
 type HumanizerPriceRequest struct {
-	Payload json.RawMessage `json:"payload"` // Humanizer job payload with file_data
+	WordCount int `json:"word_count"` // Actual word count from parsed DOCX
 }
 
 // HumanizerPriceResponse JSON response for POST /v1/humanizer/calculate-price.
@@ -22,7 +21,7 @@ type HumanizerPriceResponse struct {
 }
 
 // HandleCalculateHumanizerPrice handles POST /v1/humanizer/calculate-price.
-// Calculates the price for a humanizer job based on word count estimation.
+// Accepts word_count in JSON body (parsed client-side), calculates price.
 func (h *Handler) HandleCalculateHumanizerPrice(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == "" {
@@ -36,25 +35,17 @@ func (h *Handler) HandleCalculateHumanizerPrice(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if len(req.Payload) == 0 {
-		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "payload required")
-		return
-	}
-
-	// Estimate word count from payload
-	wordCount, err := pricing.EstimateWordCountFromPayload(req.Payload)
-	if err != nil {
-		slog.Error("failed to estimate word count", "error", err)
-		WriteError(w, http.StatusBadRequest, ErrValidationFailed, "failed to estimate word count from payload")
+	if req.WordCount <= 0 {
+		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "word_count must be greater than 0")
 		return
 	}
 
 	// Calculate price
-	amount := pricing.CalculateHumanizerPrice(wordCount)
+	amount := pricing.CalculateHumanizerPrice(req.WordCount)
 	amountINR := float64(amount) / 100.0
 
 	WriteJSON(w, http.StatusOK, HumanizerPriceResponse{
-		WordCount: wordCount,
+		WordCount: req.WordCount,
 		Amount:    amount,
 		AmountINR: amountINR,
 	})

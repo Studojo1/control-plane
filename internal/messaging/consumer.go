@@ -20,6 +20,11 @@ type ResultHandler interface {
 	HandleResult(ctx context.Context, event *ResultEvent) error
 }
 
+// ProgressHandler processes progress events (update job progress).
+type ProgressHandler interface {
+	HandleProgress(ctx context.Context, event *ProgressEvent) error
+}
+
 // ResultEvent message from workers.
 type ResultEvent struct {
 	JobID         string          `json:"job_id"`
@@ -28,6 +33,15 @@ type ResultEvent struct {
 	Result        json.RawMessage `json:"result,omitempty"` // Use RawMessage to handle both objects and arrays
 	Error         *string         `json:"error,omitempty"`
 	CorrelationID string          `json:"correlation_id,omitempty"`
+}
+
+// ProgressEvent message from workers for progress updates.
+type ProgressEvent struct {
+	JobID         string `json:"job_id"`
+	Type          string `json:"type"`
+	Progress      int    `json:"progress"`       // 0-100
+	CurrentSection string `json:"current_section"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // RabbitConsumer consumes from control-plane.results and calls ResultHandler.
@@ -99,6 +113,74 @@ func (c *RabbitConsumer) Run(ctx context.Context) error {
 	}
 }
 
+// ProgressConsumer consumes progress events and invokes ProgressHandler.
+type ProgressConsumer struct {
+	cfg     Config
+	handler ProgressHandler
+}
+
+// NewProgressConsumer returns a consumer that reads from control-plane.progress.
+func NewProgressConsumer(cfg Config, handler ProgressHandler) *ProgressConsumer {
+	return &ProgressConsumer{cfg: cfg, handler: handler}
+}
+
+// Run declares topology, consumes until ctx.Done, acks after HandleProgress.
+func (c *ProgressConsumer) Run(ctx context.Context) error {
+	conn, err := amqp.Dial(c.cfg.RabbitMQURL)
+	if err != nil {
+		return fmt.Errorf("amqp dial: %w", err)
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("amqp channel: %w", err)
+	}
+	defer ch.Close()
+
+	if err := ch.ExchangeDeclare(c.cfg.ResultsExchange, "topic", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare results exchange: %w", err)
+	}
+	queue, err := ch.QueueDeclare(c.cfg.ProgressQueue, true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("declare progress queue: %w", err)
+	}
+	if err := ch.QueueBind(queue.Name, c.cfg.ProgressBindKey, c.cfg.ResultsExchange, false, nil); err != nil {
+		return fmt.Errorf("bind progress queue: %w", err)
+	}
+
+	deliveries, err := ch.Consume(queue.Name, "control-plane-progress", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume: %w", err)
+	}
+
+	slog.Info("progress consumer started", "queue", queue.Name, "exchange", c.cfg.ResultsExchange, "bind_key", c.cfg.ProgressBindKey)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case d, ok := <-deliveries:
+			if !ok {
+				return fmt.Errorf("deliveries closed")
+			}
+			slog.Debug("received progress event", "routing_key", d.RoutingKey, "body_size", len(d.Body))
+			var ev ProgressEvent
+			if err := json.Unmarshal(d.Body, &ev); err != nil {
+				slog.Warn("invalid progress event", "body", string(d.Body), "error", err, "routing_key", d.RoutingKey)
+				_ = d.Nack(false, false)
+				continue
+			}
+			slog.Debug("processing progress event", "job_id", ev.JobID, "progress", ev.Progress)
+			if err := c.handler.HandleProgress(ctx, &ev); err != nil {
+				slog.Error("handle progress failed", "job_id", ev.JobID, "error", err)
+				_ = d.Nack(false, true)
+				continue
+			}
+			_ = d.Ack(false)
+		}
+	}
+}
+
 // RunWithRetry runs the consumer, reconnecting on connection loss.
 func RunWithRetry(ctx context.Context, consumer *RabbitConsumer, backoff time.Duration) {
 	slog.Info("starting results consumer with retry")
@@ -114,6 +196,25 @@ func RunWithRetry(ctx context.Context, consumer *RabbitConsumer, backoff time.Du
 			return
 		case <-time.After(backoff):
 			slog.Info("retrying results consumer")
+		}
+	}
+}
+
+// RunProgressConsumerWithRetry runs the progress consumer with retry.
+func RunProgressConsumerWithRetry(ctx context.Context, consumer *ProgressConsumer, backoff time.Duration) {
+	slog.Info("starting progress consumer with retry")
+	for {
+		err := consumer.Run(ctx)
+		if ctx.Err() != nil {
+			slog.Info("progress consumer context cancelled")
+			return
+		}
+		slog.Warn("progress consumer stopped", "error", err, "retrying in", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+			slog.Info("retrying progress consumer")
 		}
 	}
 }

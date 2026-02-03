@@ -156,6 +156,7 @@ func main() {
 	mux.Handle("POST /v1/payments/create-order", authMW.Wrap(http.HandlerFunc(h.HandleCreatePaymentOrder)))
 	mux.Handle("POST /v1/payments/verify", authMW.Wrap(http.HandlerFunc(h.HandleVerifyPayment)))
 	mux.Handle("POST /v1/humanizer/calculate-price", authMW.Wrap(http.HandlerFunc(h.HandleCalculateHumanizerPrice)))
+	mux.Handle("POST /v1/humanizer/upload-file", authMW.Wrap(http.HandlerFunc(h.HandleUploadHumanizerFile)))
 	mux.Handle("POST /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleSubmitJob)))
 	mux.Handle("GET /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleListJobs)))
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
@@ -182,6 +183,12 @@ func main() {
 	defer stop()
 	go func() {
 		messaging.RunWithRetry(ctx, consumer, 5*time.Second)
+	}()
+	
+	// Start progress consumer
+	progressConsumer := messaging.NewProgressConsumer(msgCfg, wf)
+	go func() {
+		messaging.RunProgressConsumerWithRetry(ctx, progressConsumer, 5*time.Second)
 	}()
 
 	addr := ":" + port

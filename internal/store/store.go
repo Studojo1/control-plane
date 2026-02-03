@@ -13,6 +13,7 @@ type JobStore interface {
 	CreateJob(ctx context.Context, j *Job) error
 	GetJob(ctx context.Context, id uuid.UUID) (*Job, error)
 	UpdateJobStatus(ctx context.Context, id uuid.UUID, status string, result []byte, err *string) error
+	UpdateJobProgress(ctx context.Context, id uuid.UUID, progress int, currentSection string) error
 	UpdateJobIdempotencyKey(ctx context.Context, jobID, keyID uuid.UUID) error
 	RecordTransition(ctx context.Context, jobID uuid.UUID, from, to string, metadata map[string]any) error
 
@@ -35,6 +36,8 @@ type Job struct {
 	Payload          json.RawMessage
 	Result           json.RawMessage
 	Error            *string
+	Progress         *int    // 0-100 progress percentage
+	CurrentSection   *string // Current section being processed
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }

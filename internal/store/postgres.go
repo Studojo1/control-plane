@@ -47,11 +47,13 @@ func (s *PostgresStore) GetJob(ctx context.Context, id uuid.UUID) (*Job, error) 
 	var payload, result []byte
 	var errMsg sql.NullString
 	var keyID sql.NullString
+	var progress sql.NullInt64
+	var currentSection sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, created_at, updated_at
+		SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, progress, current_section, created_at, updated_at
 		FROM cp.jobs WHERE id = $1`,
 		id.String(),
-	).Scan(&idStr, &j.UserID, &j.Type, &j.Status, &keyID, &payload, &result, &errMsg, &j.CreatedAt, &j.UpdatedAt)
+	).Scan(&idStr, &j.UserID, &j.Type, &j.Status, &keyID, &payload, &result, &errMsg, &progress, &currentSection, &j.CreatedAt, &j.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -68,6 +70,13 @@ func (s *PostgresStore) GetJob(ctx context.Context, id uuid.UUID) (*Job, error) 
 		u, _ := uuid.Parse(keyID.String)
 		j.IdempotencyKeyID = &u
 	}
+	if progress.Valid {
+		p := int(progress.Int64)
+		j.Progress = &p
+	}
+	if currentSection.Valid {
+		j.CurrentSection = &currentSection.String
+	}
 	return &j, nil
 }
 
@@ -80,10 +89,42 @@ func (s *PostgresStore) UpdateJobStatus(ctx context.Context, id uuid.UUID, statu
 	if errMsg != nil {
 		errVal = *errMsg
 	}
-	_, err := s.db.ExecContext(ctx, `
+	// Allow updates from any non-terminal state to terminal state (COMPLETED/FAILED)
+	// This handles cases where the job might be in QUEUED or RUNNING when result arrives
+	updateResult, err := s.db.ExecContext(ctx, `
 		UPDATE cp.jobs SET status = $1, result = $2, error = $3, updated_at = $4
 		WHERE id = $5 AND status IN ('CREATED', 'RUNNING', 'QUEUED')`,
 		status, resultVal, errVal, time.Now().UTC(), id.String(),
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := updateResult.RowsAffected()
+	if rowsAffected == 0 && (status == "COMPLETED" || status == "FAILED") {
+		// If no rows were affected and we're trying to set a terminal state,
+		// check if job is already in that state and just update result/error if needed
+		var currentStatus string
+		err := s.db.QueryRowContext(ctx, `SELECT status FROM cp.jobs WHERE id = $1`, id.String()).Scan(&currentStatus)
+		if err == nil && currentStatus == status {
+			// Job is already in the correct terminal state, just update result/error
+			_, err = s.db.ExecContext(ctx, `
+				UPDATE cp.jobs SET result = $1, error = $2, updated_at = $3
+				WHERE id = $4 AND status = $5`,
+				resultVal, errVal, time.Now().UTC(), id.String(), status,
+			)
+			return err
+		}
+	}
+	return nil
+	return err
+}
+
+// UpdateJobProgress implements JobStore.
+func (s *PostgresStore) UpdateJobProgress(ctx context.Context, id uuid.UUID, progress int, currentSection string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE cp.jobs SET progress = $1, current_section = $2, updated_at = $3
+		WHERE id = $4`,
+		progress, currentSection, time.Now().UTC(), id.String(),
 	)
 	return err
 }
@@ -154,9 +195,9 @@ func (s *PostgresStore) ListJobs(ctx context.Context, userID string, jobType str
 	var query string
 	var args []interface{}
 	
-	if jobType != "" {
+		if jobType != "" {
 		query = `
-			SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, created_at, updated_at
+			SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, progress, current_section, created_at, updated_at
 			FROM cp.jobs 
 			WHERE user_id = $1 AND type = $2 
 			ORDER BY created_at DESC 
@@ -164,7 +205,7 @@ func (s *PostgresStore) ListJobs(ctx context.Context, userID string, jobType str
 		args = []interface{}{userID, jobType, limit, offset}
 	} else {
 		query = `
-			SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, created_at, updated_at
+			SELECT id, user_id, type, status, idempotency_key_id, payload, result, error, progress, current_section, created_at, updated_at
 			FROM cp.jobs 
 			WHERE user_id = $1 
 			ORDER BY created_at DESC 
@@ -185,8 +226,10 @@ func (s *PostgresStore) ListJobs(ctx context.Context, userID string, jobType str
 		var payload, result []byte
 		var errMsg sql.NullString
 		var keyID sql.NullString
+		var progress sql.NullInt64
+		var currentSection sql.NullString
 		
-		if err := rows.Scan(&idStr, &j.UserID, &j.Type, &j.Status, &keyID, &payload, &result, &errMsg, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&idStr, &j.UserID, &j.Type, &j.Status, &keyID, &payload, &result, &errMsg, &progress, &currentSection, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		
@@ -199,6 +242,13 @@ func (s *PostgresStore) ListJobs(ctx context.Context, userID string, jobType str
 		if keyID.Valid {
 			u, _ := uuid.Parse(keyID.String)
 			j.IdempotencyKeyID = &u
+		}
+		if progress.Valid {
+			p := int(progress.Int64)
+			j.Progress = &p
+		}
+		if currentSection.Valid {
+			j.CurrentSection = &currentSection.String
 		}
 		jobs = append(jobs, &j)
 	}

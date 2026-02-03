@@ -181,13 +181,30 @@ func (s *Service) HandleResult(ctx context.Context, event *messaging.ResultEvent
 	})
 }
 
+// HandleProgress processes progress events from workers; called by messaging consumer.
+func (s *Service) HandleProgress(ctx context.Context, event *messaging.ProgressEvent) error {
+	jobID, err := uuid.Parse(event.JobID)
+	if err != nil {
+		return err
+	}
+	// Update progress without changing status
+	if err := s.Store.UpdateJobProgress(ctx, jobID, event.Progress, event.CurrentSection); err != nil {
+		return err
+	}
+	slog.Debug("updated job progress", "job_id", event.JobID, "progress", event.Progress, "section", event.CurrentSection)
+	return nil
+}
+
 func jobToResponse(j *store.Job) *JobResponse {
 	res := &JobResponse{
-		JobID:     j.ID.String(),
-		Status:    j.Status,
-		CreatedAt: j.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: j.UpdatedAt.Format(time.RFC3339),
-		Error:     j.Error,
+		JobID:          j.ID.String(),
+		Type:           j.Type,
+		Status:         j.Status,
+		CreatedAt:      j.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:      j.UpdatedAt.Format(time.RFC3339),
+		Error:          j.Error,
+		Progress:       j.Progress,
+		CurrentSection: j.CurrentSection,
 	}
 	if len(j.Result) > 0 {
 		var r any
@@ -216,10 +233,13 @@ type SubmitJobResponse struct {
 
 // JobResponse returned for GET /jobs/:id.
 type JobResponse struct {
-	JobID     string
-	Status    string
-	CreatedAt string
-	UpdatedAt string
-	Result    any
-	Error     *string
+	JobID          string
+	Type           string
+	Status         string
+	CreatedAt      string
+	UpdatedAt      string
+	Result         any
+	Error          *string
+	Progress       *int    `json:"progress,omitempty"`       // 0-100
+	CurrentSection *string `json:"current_section,omitempty"` // Current section being processed
 }
