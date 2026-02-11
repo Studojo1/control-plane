@@ -16,6 +16,7 @@ import (
 
 	"github.com/studojo/control-plane/internal/api"
 	"github.com/studojo/control-plane/internal/auth"
+	"github.com/studojo/control-plane/internal/k8s"
 	"github.com/studojo/control-plane/internal/messaging"
 	"github.com/studojo/control-plane/internal/ready"
 	"github.com/studojo/control-plane/internal/store"
@@ -134,9 +135,36 @@ func main() {
 		DB: db,
 	}
 
+	// Initialize Kubernetes client for dev panel
+	namespace := os.Getenv("KUBERNETES_NAMESPACE")
+	if namespace == "" {
+		namespace = "studojo"
+	}
+	k8sClient, err := k8s.NewClient(namespace)
+	if err != nil {
+		slog.Warn("failed to initialize k8s client, dev panel features will be limited", "error", err)
+		k8sClient = nil
+	} else {
+		slog.Info("k8s client initialized", "namespace", namespace)
+	}
+
+	// Initialize GitHub client for CI/CD status
+	githubClient := api.NewGitHubClient()
+	
+	// Initialize Azure Monitor client
+	azureMonitor := api.NewAzureMonitorClient()
+	
+	devH := &api.DevHandler{
+		DB:           db,
+		K8sClient:    k8sClient,
+		GitHubClient: githubClient,
+		AzureMonitor: azureMonitor,
+	}
+
 	jwks := auth.NewJWKSClient(jwksURL, nil)
 	authMW := &auth.Middleware{JWKS: jwks}
 	adminMW := &auth.AdminMiddleware{JWKS: jwks, DB: db}
+	devMW := &auth.DevMiddleware{JWKS: jwks, DB: db}
 
 	// Initialize rate limiter
 	redisURL := os.Getenv("REDIS_URL")
@@ -168,6 +196,22 @@ func main() {
 	mux.Handle("GET /v1/admin/dissertations", adminMW.Wrap(http.HandlerFunc(adminH.HandleListDissertations)))
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
+
+	// Initialize GitHub client for CI/CD status
+	githubClient := api.NewGitHubClient()
+	
+	// Dev panel routes
+	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))
+	mux.Handle("GET /v1/dev/services/{service}/history", devMW.Wrap(http.HandlerFunc(devH.HandleGetDeploymentHistory)))
+	mux.Handle("POST /v1/dev/services/{service}/rollback", devMW.Wrap(http.HandlerFunc(devH.HandleRollbackDeployment)))
+	mux.Handle("GET /v1/dev/logs", devMW.Wrap(http.HandlerFunc(devH.HandleQueryLogs)))
+	mux.Handle("GET /v1/dev/logs/stream", devMW.Wrap(http.HandlerFunc(devH.HandleStreamLogs)))
+	mux.Handle("GET /v1/dev/metrics", devMW.Wrap(http.HandlerFunc(devH.HandleQueryMetrics)))
+	mux.Handle("GET /v1/dev/ci-cd/status", devMW.Wrap(http.HandlerFunc(devH.HandleGetCICDStatus)))
+	mux.Handle("GET /v1/dev/deployments", devMW.Wrap(http.HandlerFunc(devH.HandleGetDeployments)))
+	mux.Handle("POST /v1/dev/deployments", devMW.Wrap(http.HandlerFunc(devH.HandleRecordDeployment)))
+	mux.Handle("GET /v1/dev/telemetry", devMW.Wrap(http.HandlerFunc(devH.HandleGetTelemetry)))
+	mux.Handle("POST /v1/dev/telemetry", devMW.Wrap(http.HandlerFunc(devH.HandleRecordTelemetry)))
 
 	// Build middleware stack: SecurityHeaders -> CORS -> RateLimit -> CorrelationID -> Logging -> Routes
 	stack := http.Handler(mux)

@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -145,12 +147,57 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, ErrUnauthorized, "unauthorized")
 		return
 	}
+	// Read the raw body first for debugging
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("failed to read request body", "error", err)
+		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "failed to read request body")
+		return
+	}
+	
+	// Log raw body for debugging
+	bodyPreview := string(bodyBytes)
+	if len(bodyPreview) > 500 {
+		bodyPreview = bodyPreview[:500] + "..."
+	}
+	slog.Info("received raw request body", 
+		"body_length", len(bodyBytes),
+		"body_preview", bodyPreview)
+	
+	// Decode from the bytes we just read
 	var req SubmitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		slog.Error("failed to decode request body", "error", err, "body_preview", bodyPreview)
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "invalid JSON body")
 		return
 	}
+	
+	// Debug logging for payload validation
+	payloadLen := len(req.Payload)
+	var payloadPreview string
+	if payloadLen > 0 {
+		previewLen := payloadLen
+		if previewLen > 200 {
+			previewLen = 200
+		}
+		payloadPreview = string(req.Payload[:previewLen])
+	} else {
+		payloadPreview = "(empty)"
+	}
+	
+	slog.Info("received job submission request", 
+		"type", req.Type, 
+		"payload_length", payloadLen,
+		"payload_preview", payloadPreview,
+		"raw_body_has_payload", strings.Contains(string(bodyBytes), `"payload"`))
+	
 	if req.Type == "" || len(req.Payload) == 0 {
+		slog.Warn("validation failed: empty type or payload", 
+			"type", req.Type, 
+			"payload_length", len(req.Payload),
+			"payload_preview", payloadPreview,
+			"raw_body_length", len(bodyBytes),
+			"raw_body_preview", bodyPreview)
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "type and payload required")
 		return
 	}
@@ -200,6 +247,17 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	idemKey := r.Header.Get("Idempotency-Key")
+
+	// Log payload before passing to workflow service
+	slog.Info("calling workflow.SubmitJob", 
+		"type", req.Type,
+		"payload_length", len(payload),
+		"payload_preview", func() string {
+			if len(payload) > 200 {
+				return string(payload[:200])
+			}
+			return string(payload)
+		}())
 
 	wfReq := &workflow.SubmitJobRequest{
 		UserID:         userID,
