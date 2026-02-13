@@ -161,6 +161,15 @@ func main() {
 		AzureMonitor: azureMonitor,
 	}
 
+	// Initialize email handler
+	emailerServiceURL := os.Getenv("EMAILER_SERVICE_URL")
+	emailH := api.NewEmailHandler(emailerServiceURL)
+	if emailerServiceURL != "" {
+		slog.Info("email handler initialized", "emailer_service_url", emailerServiceURL)
+	} else {
+		slog.Info("email handler initialized with default URL", "emailer_service_url", "http://emailer-service:8087")
+	}
+
 	jwks := auth.NewJWKSClient(jwksURL, nil)
 	authMW := &auth.Middleware{JWKS: jwks}
 	adminMW := &auth.AdminMiddleware{JWKS: jwks, DB: db}
@@ -188,6 +197,15 @@ func main() {
 	mux.Handle("POST /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleSubmitJob)))
 	mux.Handle("GET /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleListJobs)))
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
+	
+	// Email routes - public endpoints (no auth)
+	mux.Handle("POST /v1/email/forgot-password", http.HandlerFunc(emailH.HandleForgotPassword))
+	mux.Handle("POST /v1/email/reset-password", http.HandlerFunc(emailH.HandleResetPassword))
+	
+	// Email routes - authenticated endpoints
+	mux.Handle("POST /v1/email/change-password", authMW.Wrap(http.HandlerFunc(emailH.HandleChangePassword)))
+	mux.Handle("GET /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleGetEmailPreferences)))
+	mux.Handle("PUT /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleUpdateEmailPreferences)))
 	
 	// Admin routes
 	mux.Handle("GET /v1/admin/users", adminMW.Wrap(http.HandlerFunc(adminH.HandleListUsers)))
