@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -526,7 +527,6 @@ func (h *DevHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.Req
 
 // HandleGetTelemetry returns developer telemetry data
 func (h *DevHandler) HandleGetTelemetry(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
 

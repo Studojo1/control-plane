@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/studojo/control-plane/internal/k8s"
 )
 
 var upgrader = websocket.Upgrader{

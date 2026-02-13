@@ -214,9 +214,6 @@ func main() {
 	mux.Handle("GET /v1/admin/dissertations", adminMW.Wrap(http.HandlerFunc(adminH.HandleListDissertations)))
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
-
-	// Initialize GitHub client for CI/CD status
-	githubClient := api.NewGitHubClient()
 	
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))

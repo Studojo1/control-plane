@@ -68,19 +68,28 @@ func (g *GitHubClient) GetWorkflowRuns(ctx context.Context, workflowName string,
 	}
 
 	// If workflow name is provided, try to find it
+	var workflowID *int64
 	if workflowName != "" {
 		workflows, _, err := g.client.Actions.ListWorkflows(ctx, g.owner, g.repo, nil)
 		if err == nil {
 			for _, wf := range workflows.Workflows {
 				if *wf.Name == workflowName || *wf.Name == fmt.Sprintf("%s CI/CD", workflowName) {
-					opts.WorkflowID = wf.ID
+					workflowID = wf.ID
 					break
 				}
 			}
 		}
 	}
 
-	runs, resp, err := g.client.Actions.ListRepositoryWorkflowRuns(ctx, g.owner, g.repo, opts)
+	// Use workflow-specific endpoint if workflow ID is found
+	var runs *github.WorkflowRuns
+	var resp *github.Response
+	var err error
+	if workflowID != nil {
+		runs, resp, err = g.client.Actions.ListWorkflowRunsByID(ctx, g.owner, g.repo, *workflowID, opts)
+	} else {
+		runs, resp, err = g.client.Actions.ListRepositoryWorkflowRuns(ctx, g.owner, g.repo, opts)
+	}
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			// Repository might not be accessible, return empty
