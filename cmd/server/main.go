@@ -227,6 +227,8 @@ func main() {
 	mux.Handle("POST /v1/dev/deployments", devMW.Wrap(http.HandlerFunc(devH.HandleRecordDeployment)))
 	mux.Handle("GET /v1/dev/telemetry", devMW.Wrap(http.HandlerFunc(devH.HandleGetTelemetry)))
 	mux.Handle("POST /v1/dev/telemetry", devMW.Wrap(http.HandlerFunc(devH.HandleRecordTelemetry)))
+	mux.Handle("GET /v1/dev/docs", devMW.Wrap(http.HandlerFunc(devH.HandleListDocs)))
+	mux.Handle("GET /v1/dev/docs/{slug}", devMW.Wrap(http.HandlerFunc(devH.HandleGetDoc)))
 
 	// Build middleware stack: SecurityHeaders -> CORS -> RateLimit -> CorrelationID -> Logging -> Routes
 	stack := http.Handler(mux)

@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -650,5 +652,144 @@ func (h *DevHandler) HandleRecordTelemetry(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "recorded"})
+}
+
+// HandleListDocs returns a list of available documentation files
+func (h *DevHandler) HandleListDocs(w http.ResponseWriter, r *http.Request) {
+	// Try multiple possible doc directory locations
+	docDirs := []string{
+		"/app/doc",                    // Production mount path
+		"./doc",                       // Local development
+		"../doc",                      // From control-plane directory
+		"/home/rkamesh/studojo/doc",  // Absolute path for development
+		os.Getenv("DOC_DIR"),          // Environment variable override
+	}
+
+	var docDir string
+	for _, dir := range docDirs {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			docDir = dir
+			break
+		}
+	}
+
+	if docDir == "" {
+		slog.Warn("doc directory not found, returning empty list")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{})
+		return
+	}
+
+	var docs []map[string]interface{}
+	err := filepath.WalkDir(docDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+		if d.IsDir() {
+			return nil // Skip directories
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil // Only markdown files
+		}
+
+		relPath, err := filepath.Rel(docDir, path)
+		if err != nil {
+			return nil
+		}
+
+		// Skip README.md files
+		if strings.HasSuffix(relPath, "README.md") {
+			return nil
+		}
+
+		slug := strings.TrimSuffix(relPath, ".md")
+		title := strings.ReplaceAll(slug, "-", " ")
+		title = strings.ReplaceAll(title, "_", " ")
+		// Capitalize first letter of each word
+		words := strings.Fields(title)
+		for i, word := range words {
+			if len(word) > 0 {
+				words[i] = strings.ToUpper(word[:1]) + strings.ToLower(word[1:])
+			}
+		}
+		title = strings.Join(words, " ")
+
+		docs = append(docs, map[string]interface{}{
+			"slug":  slug,
+			"title": title,
+		})
+
+		return nil
+	})
+
+	if err != nil {
+		slog.Warn("error walking doc directory", "error", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(docs)
+}
+
+// HandleGetDoc returns the content of a specific documentation file
+func (h *DevHandler) HandleGetDoc(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	if slug == "" {
+		http.Error(w, "slug required", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize slug to prevent directory traversal
+	if strings.Contains(slug, "..") || strings.Contains(slug, "/") || strings.Contains(slug, "\\") {
+		http.Error(w, "invalid slug", http.StatusBadRequest)
+		return
+	}
+
+	// Try multiple possible doc directory locations
+	docDirs := []string{
+		"/app/doc",                    // Production mount path
+		"./doc",                       // Local development
+		"../doc",                      // From control-plane directory
+		"/home/rkamesh/studojo/doc",  // Absolute path for development
+		os.Getenv("DOC_DIR"),          // Environment variable override
+	}
+
+	var docDir string
+	for _, dir := range docDirs {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			docDir = dir
+			break
+		}
+	}
+
+	if docDir == "" {
+		http.Error(w, "doc directory not found", http.StatusNotFound)
+		return
+	}
+
+	// Try both .md extension and without
+	docPath := filepath.Join(docDir, slug+".md")
+	if _, err := os.Stat(docPath); os.IsNotExist(err) {
+		http.Error(w, "documentation not found", http.StatusNotFound)
+		return
+	}
+
+	content, err := os.ReadFile(docPath)
+	if err != nil {
+		slog.Error("failed to read doc file", "path", docPath, "error", err)
+		http.Error(w, "failed to read documentation", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"slug":    slug,
+		"content": string(content),
+	})
 }
 
