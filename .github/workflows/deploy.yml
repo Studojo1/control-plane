@@ -2,7 +2,7 @@ name: Build and Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 env:
   REGISTRY: acrstudojo-dhfsdrfhf6a6bbg2.azurecr.io
@@ -78,4 +78,3 @@ jobs:
               "status": "success",
               "workflow_run": ${{ github.run_id }}
             }' || echo "Failed to record deployment (non-critical)"
-
