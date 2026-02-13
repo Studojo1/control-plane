@@ -2,7 +2,7 @@ name: Build and Deploy
 
 on:
   push:
-    branches: [master]
+    branches: [main]
 
 env:
   REGISTRY: acrstudojo-dhfsdrfhf6a6bbg2.azurecr.io
