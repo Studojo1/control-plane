@@ -92,13 +92,13 @@ func main() {
 	st := store.NewPostgresStore(db)
 	wf := &workflow.Service{Store: st, Publisher: pub}
 	readyChecker := &ready.Checker{DB: db, RabbitMQURL: rabbitURL}
-	
+
 	// Razorpay configuration: support test/prod mode switching
 	razorpayMode := os.Getenv("RAZORPAY_MODE")
 	if razorpayMode == "" {
 		razorpayMode = "test" // Default to test mode
 	}
-	
+
 	var razorpayKey, razorpaySecret string
 	if razorpayMode == "prod" || razorpayMode == "production" {
 		razorpayKey = os.Getenv("RAZORPAY_KEY_PROD_ID")
@@ -109,7 +109,7 @@ func main() {
 		razorpaySecret = os.Getenv("RAZORPAY_KEY_TEST_SECRET")
 		slog.Info("Razorpay mode: TEST")
 	}
-	
+
 	if razorpayKey == "" {
 		slog.Warn("Razorpay key not set - payment functionality will not work", "mode", razorpayMode)
 	} else {
@@ -122,12 +122,12 @@ func main() {
 	if razorpaySecret == "" {
 		slog.Warn("Razorpay secret not set - payment signature verification will not work", "mode", razorpayMode)
 	}
-	
+
 	h := &api.Handler{
-		Workflow:      wf,
-		Ready:         readyChecker,
-		PaymentStore:  st,
-		RazorpayKey:   razorpayKey,
+		Workflow:       wf,
+		Ready:          readyChecker,
+		PaymentStore:   st,
+		RazorpayKey:    razorpayKey,
 		RazorpaySecret: razorpaySecret,
 	}
 
@@ -150,10 +150,10 @@ func main() {
 
 	// Initialize GitHub client for CI/CD status
 	githubClient := api.NewGitHubClient()
-	
+
 	// Initialize Azure Monitor client
 	azureMonitor := api.NewAzureMonitorClient()
-	
+
 	devH := &api.DevHandler{
 		DB:           db,
 		K8sClient:    k8sClient,
@@ -197,24 +197,25 @@ func main() {
 	mux.Handle("POST /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleSubmitJob)))
 	mux.Handle("GET /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleListJobs)))
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
-	
+
 	// Email routes - public endpoints (no auth)
 	mux.Handle("POST /v1/email/forgot-password", http.HandlerFunc(emailH.HandleForgotPassword))
 	mux.Handle("POST /v1/email/reset-password", http.HandlerFunc(emailH.HandleResetPassword))
-	
+
 	// Email routes - authenticated endpoints
 	mux.Handle("POST /v1/email/change-password", authMW.Wrap(http.HandlerFunc(emailH.HandleChangePassword)))
 	mux.Handle("GET /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleGetEmailPreferences)))
 	mux.Handle("PUT /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleUpdateEmailPreferences)))
-	
+
 	// Admin routes
 	mux.Handle("GET /v1/admin/users", adminMW.Wrap(http.HandlerFunc(adminH.HandleListUsers)))
 	mux.Handle("GET /v1/admin/users/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetUser)))
 	mux.Handle("PATCH /v1/admin/users/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleUpdateUser)))
 	mux.Handle("GET /v1/admin/dissertations", adminMW.Wrap(http.HandlerFunc(adminH.HandleListDissertations)))
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
+	mux.Handle("GET /v1/admin/jobs/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetJob)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
-	
+
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))
 	mux.Handle("GET /v1/dev/services/{service}/history", devMW.Wrap(http.HandlerFunc(devH.HandleGetDeploymentHistory)))
@@ -245,7 +246,7 @@ func main() {
 	go func() {
 		messaging.RunWithRetry(ctx, consumer, 5*time.Second)
 	}()
-	
+
 	// Start progress consumer
 	progressConsumer := messaging.NewProgressConsumer(msgCfg, wf)
 	go func() {

@@ -499,6 +499,55 @@ func (h *AdminHandler) HandleListCareers(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// HandleGetJob handles GET /v1/admin/jobs/:id.
+// Allows admins to fetch any job by ID (bypassing ownership check).
+func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		WriteError(w, http.StatusBadRequest, ErrValidationFailed, "job id required")
+		return
+	}
+
+	var j struct {
+		JobID     string    `json:"job_id"`
+		UserID    string    `json:"user_id"`
+		Type      string    `json:"type"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Result    []byte    `json:"-"`
+		ResultObj any       `json:"result,omitempty"`
+		Error     *string   `json:"error,omitempty"`
+	}
+
+	err := h.DB.QueryRowContext(r.Context(), `
+		SELECT id, user_id, type, status, created_at, updated_at, result, error
+		FROM cp.jobs
+		WHERE id = $1`,
+		jobID,
+	).Scan(
+		&j.JobID, &j.UserID, &j.Type, &j.Status, &j.CreatedAt, &j.UpdatedAt, &j.Result, &j.Error,
+	)
+	if err == sql.ErrNoRows {
+		WriteError(w, http.StatusNotFound, ErrNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		slog.Error("failed to get job", "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to get job")
+		return
+	}
+
+	if len(j.Result) > 0 {
+		var r any
+		if err := json.Unmarshal(j.Result, &r); err == nil {
+			j.ResultObj = r
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, j)
+}
+
 // MonthMetric represents metrics for a single month.
 type MonthMetric struct {
 	Month            string `json:"month"`              // Format: "YYYY-MM"
