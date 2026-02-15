@@ -589,7 +589,7 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 										newURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s?%s",
 											accountName, containerName, blobName, sasQueryParams.Encode())
 										rMap["download_url"] = newURL
-										slog.Info("successfully refreshed SAS token", "job_id", j.ID, "new_url", newURL)
+										slog.Info("successfully refreshed SAS token", "job_id", j.JobID, "new_url", newURL)
 									} else {
 										slog.Error("failed to generate SAS token", "error", err)
 									}
