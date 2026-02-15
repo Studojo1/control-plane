@@ -607,12 +607,9 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 					}
 				} else {
 					slog.Info("download_url is not a blob storage url", "url", downloadURL)
-					}
 				}
 			}
 			j.ResultObj = rMap
-		}
-	}
 		} else {
 			// Fallback if unmarshal to map fails (e.g. if result is not an object)
 			var r any
