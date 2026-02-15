@@ -589,18 +589,30 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 										newURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s?%s",
 											accountName, containerName, blobName, sasQueryParams.Encode())
 										rMap["download_url"] = newURL
+										slog.Info("successfully refreshed SAS token", "job_id", j.ID, "new_url", newURL)
 									} else {
 										slog.Error("failed to generate SAS token", "error", err)
 									}
 								} else {
 									slog.Error("failed to create shared key credential", "error", err)
 								}
+							} else {
+								slog.Error("missing azure storage credentials", "account_name_set", accountName != "", "account_key_set", accountKey != "")
 							}
+						} else {
+							slog.Error("failed to parse blob path segments", "blob_path", blobPath)
 						}
+					} else {
+						slog.Error("failed to split blob url", "url", downloadURL)
+					}
+				} else {
+					slog.Info("download_url is not a blob storage url", "url", downloadURL)
 					}
 				}
 			}
 			j.ResultObj = rMap
+		}
+	}
 		} else {
 			// Fallback if unmarshal to map fails (e.g. if result is not an object)
 			var r any
