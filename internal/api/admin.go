@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
 )
 
 // AdminHandler handles admin-only endpoints.
@@ -17,22 +22,22 @@ type AdminHandler struct {
 
 // User represents a user in admin responses.
 type AdminUser struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Email             string    `json:"email"`
-	EmailVerified     bool      `json:"email_verified"`
-	PhoneNumber       *string   `json:"phone_number,omitempty"`
-	PhoneNumberVerified bool   `json:"phone_number_verified"`
-	Role              *string   `json:"role,omitempty"`
-	Banned            *bool      `json:"banned,omitempty"`
-	BanReason         *string    `json:"ban_reason,omitempty"`
-	BanExpires        *time.Time `json:"ban_expires,omitempty"`
-	FullName          *string    `json:"full_name,omitempty"`
-	College           *string    `json:"college,omitempty"`
-	YearOfStudy       *string    `json:"year_of_study,omitempty"`
-	Course            *string    `json:"course,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	Email               string     `json:"email"`
+	EmailVerified       bool       `json:"email_verified"`
+	PhoneNumber         *string    `json:"phone_number,omitempty"`
+	PhoneNumberVerified bool       `json:"phone_number_verified"`
+	Role                *string    `json:"role,omitempty"`
+	Banned              *bool      `json:"banned,omitempty"`
+	BanReason           *string    `json:"ban_reason,omitempty"`
+	BanExpires          *time.Time `json:"ban_expires,omitempty"`
+	FullName            *string    `json:"full_name,omitempty"`
+	College             *string    `json:"college,omitempty"`
+	YearOfStudy         *string    `json:"year_of_study,omitempty"`
+	Course              *string    `json:"course,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // DissertationSubmission represents a dissertation submission.
@@ -45,7 +50,7 @@ type DissertationSubmission struct {
 	DataType          string                 `json:"data_type"`
 	CurrentStage      string                 `json:"current_stage"`
 	AdditionalNotes   *string                `json:"additional_notes,omitempty"`
-	FormData          map[string]interface{}  `json:"form_data,omitempty"`
+	FormData          map[string]interface{} `json:"form_data,omitempty"`
 	RazorpayOrderID   *string                `json:"razorpay_order_id,omitempty"`
 	RazorpayPaymentID *string                `json:"razorpay_payment_id,omitempty"`
 	PaymentStatus     string                 `json:"payment_status"`
@@ -66,7 +71,7 @@ type CareerApplication struct {
 	CurrentYear       string                 `json:"current_year"`
 	Course            string                 `json:"course"`
 	AreasOfInterest   []interface{}          `json:"areas_of_interest"`
-	FormData          map[string]interface{}  `json:"form_data,omitempty"`
+	FormData          map[string]interface{} `json:"form_data,omitempty"`
 	RazorpayOrderID   *string                `json:"razorpay_order_id,omitempty"`
 	RazorpayPaymentID *string                `json:"razorpay_payment_id,omitempty"`
 	PaymentStatus     string                 `json:"payment_status"`
@@ -184,8 +189,8 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"users": users,
-		"limit": limit,
+		"users":  users,
+		"limit":  limit,
 		"offset": offset,
 	})
 }
@@ -269,9 +274,9 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		Role      *string    `json:"role,omitempty"`
-		Banned    *bool      `json:"banned,omitempty"`
-		BanReason *string    `json:"ban_reason,omitempty"`
+		Role       *string    `json:"role,omitempty"`
+		Banned     *bool      `json:"banned,omitempty"`
+		BanReason  *string    `json:"ban_reason,omitempty"`
 		BanExpires *time.Time `json:"ban_expires,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -415,8 +420,8 @@ func (h *AdminHandler) HandleListDissertations(w http.ResponseWriter, r *http.Re
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"submissions": submissions,
-		"limit": limit,
-		"offset": offset,
+		"limit":       limit,
+		"offset":      offset,
 	})
 }
 
@@ -494,8 +499,8 @@ func (h *AdminHandler) HandleListCareers(w http.ResponseWriter, r *http.Request)
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"applications": applications,
-		"limit": limit,
-		"offset": offset,
+		"limit":        limit,
+		"offset":       offset,
 	})
 }
 
@@ -539,9 +544,69 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(j.Result) > 0 {
-		var r any
-		if err := json.Unmarshal(j.Result, &r); err == nil {
-			j.ResultObj = r
+		var rMap map[string]interface{}
+		if err := json.Unmarshal(j.Result, &rMap); err == nil {
+			// Check if we have a download_url and if we can refresh the SAS token
+			if downloadURL, ok := rMap["download_url"].(string); ok && downloadURL != "" {
+				// Parse the URL to get the blob path
+				// URL format: https://<account>.blob.core.windows.net/<container>/<blob path>?<sas>
+				// We need to extract <container> and <blob path>
+
+				// Basic check if it's an Azure Blob URL
+				if strings.Contains(downloadURL, ".blob.core.windows.net/") {
+					parts := strings.Split(downloadURL, ".blob.core.windows.net/")
+					if len(parts) == 2 {
+						pathAndQuery := parts[1]
+						pathParts := strings.Split(pathAndQuery, "?")
+						blobPath := pathParts[0]
+
+						// blobPath is <container>/<path/to/blob>
+						// Split into container and blob name
+						pathSegments := strings.SplitN(blobPath, "/", 2)
+						if len(pathSegments) == 2 {
+							containerName := pathSegments[0]
+							blobName := pathSegments[1]
+
+							// Generate fresh SAS token
+							accountName := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME")
+							accountKey := os.Getenv("AZURE_STORAGE_ACCOUNT_KEY")
+
+							if accountName != "" && accountKey != "" {
+								cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
+								if err == nil {
+									permissions := sas.BlobPermissions{Read: true}
+									sasQueryParams, err := sas.BlobSignatureValues{
+										Protocol:      sas.ProtocolHTTPS,
+										StartTime:     time.Now().UTC().Add(-5 * time.Minute),
+										ExpiryTime:    time.Now().UTC().Add(1 * time.Hour),
+										Permissions:   permissions.String(),
+										ContainerName: containerName,
+										BlobName:      blobName,
+									}.SignWithSharedKey(cred)
+
+									if err == nil {
+										// Construct new URL
+										newURL := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s?%s",
+											accountName, containerName, blobName, sasQueryParams.Encode())
+										rMap["download_url"] = newURL
+									} else {
+										slog.Error("failed to generate SAS token", "error", err)
+									}
+								} else {
+									slog.Error("failed to create shared key credential", "error", err)
+								}
+							}
+						}
+					}
+				}
+			}
+			j.ResultObj = rMap
+		} else {
+			// Fallback if unmarshal to map fails (e.g. if result is not an object)
+			var r any
+			if err := json.Unmarshal(j.Result, &r); err == nil {
+				j.ResultObj = r
+			}
 		}
 	}
 
@@ -550,11 +615,11 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 
 // MonthMetric represents metrics for a single month.
 type MonthMetric struct {
-	Month            string `json:"month"`              // Format: "YYYY-MM"
-	UsersCount       int64  `json:"users_count"`
-	OrdersCount      int64  `json:"orders_count"`
+	Month              string `json:"month"` // Format: "YYYY-MM"
+	UsersCount         int64  `json:"users_count"`
+	OrdersCount        int64  `json:"orders_count"`
 	DissertationsCount int64  `json:"dissertations_count"`
-	Revenue          int64  `json:"revenue"`            // In paise
+	Revenue            int64  `json:"revenue"` // In paise
 }
 
 // AssignmentOrder represents an assignment order with payment info.
@@ -564,36 +629,36 @@ type AssignmentOrder struct {
 	UserName    string `json:"user_name"`
 	CreatedAt   string `json:"created_at"`
 	Status      string `json:"status"`
-	Amount      int64  `json:"amount"`       // In paise
+	Amount      int64  `json:"amount"` // In paise
 	DownloadURL string `json:"download_url,omitempty"`
 }
 
 // RevenueBreakdown represents revenue split by type.
 type RevenueBreakdown struct {
-	Total        int64 `json:"total"`         // In paise
-	Assignments  int64 `json:"assignments"`   // In paise
+	Total         int64 `json:"total"`         // In paise
+	Assignments   int64 `json:"assignments"`   // In paise
 	Dissertations int64 `json:"dissertations"` // In paise
-	Careers      int64 `json:"careers"`       // In paise
+	Careers       int64 `json:"careers"`       // In paise
 }
 
 // DashboardStats represents dashboard statistics.
 type DashboardStats struct {
-	TotalUsers        int64 `json:"total_users"`
-	TotalDissertations int64 `json:"total_dissertations"`
-	TotalCareers      int64 `json:"total_careers"`
-	UsersLast7Days    int64 `json:"users_last_7_days"`
-	UsersLast30Days   int64 `json:"users_last_30_days"`
-	DissertationsLast7Days  int64 `json:"dissertations_last_7_days"`
-	DissertationsLast30Days int64 `json:"dissertations_last_30_days"`
-	CareersLast7Days   int64 `json:"careers_last_7_days"`
-	CareersLast30Days  int64 `json:"careers_last_30_days"`
-	BannedUsers       int64 `json:"banned_users"`
-	ActiveUsers       int64 `json:"active_users"`
-	CompletedPayments int64 `json:"completed_payments"`
-	PendingPayments   int64 `json:"pending_payments"`
-	MonthlyMetrics   []MonthMetric `json:"monthly_metrics"`
-	AssignmentOrders []AssignmentOrder `json:"assignment_orders"`
-	RevenueBreakdown RevenueBreakdown `json:"revenue_breakdown"`
+	TotalUsers              int64             `json:"total_users"`
+	TotalDissertations      int64             `json:"total_dissertations"`
+	TotalCareers            int64             `json:"total_careers"`
+	UsersLast7Days          int64             `json:"users_last_7_days"`
+	UsersLast30Days         int64             `json:"users_last_30_days"`
+	DissertationsLast7Days  int64             `json:"dissertations_last_7_days"`
+	DissertationsLast30Days int64             `json:"dissertations_last_30_days"`
+	CareersLast7Days        int64             `json:"careers_last_7_days"`
+	CareersLast30Days       int64             `json:"careers_last_30_days"`
+	BannedUsers             int64             `json:"banned_users"`
+	ActiveUsers             int64             `json:"active_users"`
+	CompletedPayments       int64             `json:"completed_payments"`
+	PendingPayments         int64             `json:"pending_payments"`
+	MonthlyMetrics          []MonthMetric     `json:"monthly_metrics"`
+	AssignmentOrders        []AssignmentOrder `json:"assignment_orders"`
+	RevenueBreakdown        RevenueBreakdown  `json:"revenue_breakdown"`
 }
 
 // HandleGetDashboardStats handles GET /v1/admin/stats.
@@ -857,12 +922,11 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 	}
 
 	stats.RevenueBreakdown = RevenueBreakdown{
-		Assignments:  assignmentsRev,
+		Assignments:   assignmentsRev,
 		Dissertations: dissertationsRev,
-		Careers:      careersRev,
-		Total:        assignmentsRev + dissertationsRev + careersRev,
+		Careers:       careersRev,
+		Total:         assignmentsRev + dissertationsRev + careersRev,
 	}
 
 	WriteJSON(w, http.StatusOK, stats)
 }
-
