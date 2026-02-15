@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -566,6 +567,11 @@ func (h *AdminHandler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 						if len(pathSegments) == 2 {
 							containerName := pathSegments[0]
 							blobName := pathSegments[1]
+
+							// Decode blob name in case it contains %2F or other escaped characters
+							if decodedName, err := url.QueryUnescape(blobName); err == nil {
+								blobName = decodedName
+							}
 
 							// Generate fresh SAS token
 							accountName := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME")

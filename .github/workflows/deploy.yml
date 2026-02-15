@@ -94,6 +94,7 @@ jobs:
         run: |
           curl -X POST https://api.studojo.com/v1/dev/deployments \
             -H "Content-Type: application/json" \
+            -H "X-Deployment-Secret: ${{ secrets.DEPLOYMENT_SECRET }}" \
             -d '{
               "service": "${{ env.SERVICE_NAME }}",
               "version": "${{ env.IMAGE_TAG }}",
