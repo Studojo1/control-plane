@@ -741,15 +741,22 @@ func (h *DevHandler) HandleListDocs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var docs []map[string]interface{}
-	err := filepath.WalkDir(docDir, func(path string, d fs.DirEntry, err error) error {
+	// Use Walk instead of WalkDir to follow symlinks (ConfigMaps use symlinks)
+	err := filepath.Walk(docDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
-		if d.IsDir() {
+		if info.IsDir() {
 			return nil // Skip directories
 		}
 		if !strings.HasSuffix(path, ".md") {
 			return nil // Only markdown files
+		}
+
+		// Resolve symlinks to get actual path
+		realPath, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			path = realPath
 		}
 
 		relPath, err := filepath.Rel(docDir, path)
@@ -757,8 +764,13 @@ func (h *DevHandler) HandleListDocs(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 
+		// Skip hidden directories and timestamped ConfigMap directories
+		if strings.Contains(relPath, "..") || strings.Contains(relPath, "/..") {
+			return nil
+		}
+
 		// Skip README.md files
-		if strings.HasSuffix(relPath, "README.md") {
+		if strings.HasSuffix(relPath, "README.md") || strings.HasSuffix(relPath, "README.md") {
 			return nil
 		}
 
@@ -831,6 +843,12 @@ func (h *DevHandler) HandleGetDoc(w http.ResponseWriter, r *http.Request) {
 
 	// Try both .md extension and without
 	docPath := filepath.Join(docDir, slug+".md")
+	
+	// Resolve symlink if it exists
+	if resolvedPath, err := filepath.EvalSymlinks(docPath); err == nil {
+		docPath = resolvedPath
+	}
+	
 	if _, err := os.Stat(docPath); os.IsNotExist(err) {
 		http.Error(w, "documentation not found", http.StatusNotFound)
 		return
