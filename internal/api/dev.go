@@ -527,6 +527,63 @@ func (h *DevHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(map[string]string{"status": "rolled back", "version": req.Version})
 }
 
+// HandleScaleService scales a deployment to the specified number of replicas
+func (h *DevHandler) HandleScaleService(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	service := r.PathValue("service")
+	if service == "" {
+		http.Error(w, "service name required", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Replicas int32 `json:"replicas"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Replicas < 0 {
+		http.Error(w, "replicas must be >= 0", http.StatusBadRequest)
+		return
+	}
+
+	if req.Replicas > 100 {
+		http.Error(w, "replicas must be <= 100", http.StatusBadRequest)
+		return
+	}
+
+	if h.K8sClient == nil {
+		http.Error(w, "K8s client not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Scale the deployment
+	if err := h.K8sClient.ScaleDeployment(ctx, service, req.Replicas); err != nil {
+		slog.Error("failed to scale deployment", "service", service, "replicas", req.Replicas, "error", err)
+		http.Error(w, fmt.Sprintf("failed to scale deployment: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record scaling action in database
+	userID := auth.UserIDFromContext(ctx)
+	_, err := h.DB.Exec(`
+		INSERT INTO cp.deployment_history (service, version, deployed_at, deployed_by, status, workflow_run)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, service, fmt.Sprintf("scale-%d", req.Replicas), time.Now(), userID, "scaled", nil)
+	if err != nil {
+		slog.Warn("failed to record scaling in database", "error", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "scaled",
+		"service":  service,
+		"replicas": req.Replicas,
+	})
+}
+
 // HandleGetTelemetry returns developer telemetry data
 func (h *DevHandler) HandleGetTelemetry(w http.ResponseWriter, r *http.Request) {
 	startStr := r.URL.Query().Get("start")

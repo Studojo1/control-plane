@@ -180,6 +180,22 @@ func (c *Client) StreamLogs(ctx context.Context, serviceName, podName, tailLines
 	return stream, nil
 }
 
+// ScaleDeployment scales a deployment to the specified number of replicas
+func (c *Client) ScaleDeployment(ctx context.Context, deploymentName string, replicas int32) error {
+	deployment, err := c.GetDeployment(ctx, deploymentName)
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+
+	deployment.Spec.Replicas = &replicas
+	_, err = c.clientset.AppsV1().Deployments(c.namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to scale deployment %s: %w", deploymentName, err)
+	}
+
+	return nil
+}
+
 func int64Ptr(i int64) *int64 {
 	return &i
 }

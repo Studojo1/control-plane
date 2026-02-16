@@ -220,6 +220,7 @@ func main() {
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))
 	mux.Handle("GET /v1/dev/services/{service}/history", devMW.Wrap(http.HandlerFunc(devH.HandleGetDeploymentHistory)))
 	mux.Handle("POST /v1/dev/services/{service}/rollback", devMW.Wrap(http.HandlerFunc(devH.HandleRollbackDeployment)))
+	mux.Handle("POST /v1/dev/services/{service}/scale", devMW.Wrap(http.HandlerFunc(devH.HandleScaleService)))
 	mux.Handle("GET /v1/dev/logs", devMW.Wrap(http.HandlerFunc(devH.HandleQueryLogs)))
 	mux.Handle("GET /v1/dev/logs/stream", devMW.Wrap(http.HandlerFunc(devH.HandleStreamLogs)))
 	mux.Handle("GET /v1/dev/metrics", devMW.Wrap(http.HandlerFunc(devH.HandleQueryMetrics)))
