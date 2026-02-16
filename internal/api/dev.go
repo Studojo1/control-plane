@@ -741,40 +741,44 @@ func (h *DevHandler) HandleListDocs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var docs []map[string]interface{}
-	// Use Walk instead of WalkDir to follow symlinks (ConfigMaps use symlinks)
-	err := filepath.Walk(docDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-		if info.IsDir() {
-			return nil // Skip directories
-		}
-		if !strings.HasSuffix(path, ".md") {
-			return nil // Only markdown files
+	// Read directory entries directly to handle ConfigMap symlinks
+	entries, err := os.ReadDir(docDir)
+	if err != nil {
+		slog.Warn("failed to read doc directory", "error", err, "dir", docDir)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{})
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue // Skip directories
 		}
 
-		// Resolve symlinks to get actual path
-		realPath, err := filepath.EvalSymlinks(path)
-		if err == nil {
-			path = realPath
-		}
-
-		relPath, err := filepath.Rel(docDir, path)
-		if err != nil {
-			return nil
-		}
-
-		// Skip hidden directories and timestamped ConfigMap directories
-		if strings.Contains(relPath, "..") || strings.Contains(relPath, "/..") {
-			return nil
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".md") {
+			continue // Only markdown files
 		}
 
 		// Skip README.md files
-		if strings.HasSuffix(relPath, "README.md") || strings.HasSuffix(relPath, "README.md") {
-			return nil
+		if name == "README.md" || strings.HasSuffix(name, "README.md") {
+			continue
 		}
 
-		slug := strings.TrimSuffix(relPath, ".md")
+		// Resolve symlink to get actual file
+		fullPath := filepath.Join(docDir, name)
+		realPath, err := filepath.EvalSymlinks(fullPath)
+		if err != nil {
+			slog.Warn("failed to resolve symlink", "path", fullPath, "error", err)
+			continue
+		}
+
+		// Verify it's actually a file and readable
+		if info, err := os.Stat(realPath); err != nil || info.IsDir() {
+			continue
+		}
+
+		slug := strings.TrimSuffix(name, ".md")
 		title := strings.ReplaceAll(slug, "-", " ")
 		title = strings.ReplaceAll(title, "_", " ")
 		// Capitalize first letter of each word
@@ -790,12 +794,6 @@ func (h *DevHandler) HandleListDocs(w http.ResponseWriter, r *http.Request) {
 			"slug":  slug,
 			"title": title,
 		})
-
-		return nil
-	})
-
-	if err != nil {
-		slog.Warn("error walking doc directory", "error", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
