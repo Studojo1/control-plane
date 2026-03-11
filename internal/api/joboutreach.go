@@ -22,8 +22,8 @@ func NewJobOutreachHandler(serviceURL string) *JobOutreachHandler {
 	}
 }
 
-// proxyRequest forwards a request to job-outreach-svc and returns the response.
-func (h *JobOutreachHandler) proxyRequest(w http.ResponseWriter, r *http.Request, path string) {
+// forward sends a request to job-outreach-svc and writes the response back.
+func (h *JobOutreachHandler) forward(w http.ResponseWriter, r *http.Request, path string) {
 	proxy := &EmailHandler{
 		EmailerServiceURL: h.ServiceURL,
 		HTTPClient:        h.HTTPClient,
@@ -31,9 +31,9 @@ func (h *JobOutreachHandler) proxyRequest(w http.ResponseWriter, r *http.Request
 	proxy.proxyRequest(w, r, path)
 }
 
-// proxyAll is a catch-all handler that strips the /v1/outreach prefix and
+// ProxyAll is a catch-all handler that strips the /v1/outreach prefix and
 // forwards everything to the job-outreach-svc at /api/v1/*.
-func (h *JobOutreachHandler) proxyAll(w http.ResponseWriter, r *http.Request) {
+func (h *JobOutreachHandler) ProxyAll(w http.ResponseWriter, r *http.Request) {
 	// Request path: /v1/outreach/candidates/upload -> forward as /api/v1/candidates/upload
 	path := r.URL.Path
 	path = strings.TrimPrefix(path, "/v1/outreach")
@@ -47,7 +47,7 @@ func (h *JobOutreachHandler) proxyAll(w http.ResponseWriter, r *http.Request) {
 		targetPath += "?" + r.URL.RawQuery
 	}
 
-	h.proxyRequest(w, r, targetPath)
+	h.forward(w, r, targetPath)
 }
 
 // HandleHealth proxies the health check.
@@ -56,5 +56,5 @@ func (h *JobOutreachHandler) HandleHealth(w http.ResponseWriter, r *http.Request
 		WriteError(w, http.StatusMethodNotAllowed, ErrValidationFailed, "method not allowed")
 		return
 	}
-	h.proxyRequest(w, r, "/health")
+	h.forward(w, r, "/health")
 }
