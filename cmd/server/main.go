@@ -170,6 +170,15 @@ func main() {
 		slog.Info("email handler initialized with default URL", "emailer_service_url", "http://emailer-service:8087")
 	}
 
+	// Initialize job outreach handler
+	jobOutreachServiceURL := os.Getenv("JOB_OUTREACH_SERVICE_URL")
+	jobOutreachH := api.NewJobOutreachHandler(jobOutreachServiceURL)
+	if jobOutreachServiceURL != "" {
+		slog.Info("job outreach handler initialized", "service_url", jobOutreachServiceURL)
+	} else {
+		slog.Info("job outreach handler initialized with default URL", "service_url", "http://job-outreach-svc:8000")
+	}
+
 	jwks := auth.NewJWKSClient(jwksURL, nil)
 	authMW := &auth.Middleware{JWKS: jwks}
 	adminMW := &auth.AdminMiddleware{JWKS: jwks, DB: db}
@@ -206,6 +215,13 @@ func main() {
 	mux.Handle("POST /v1/email/change-password", authMW.Wrap(http.HandlerFunc(emailH.HandleChangePassword)))
 	mux.Handle("GET /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleGetEmailPreferences)))
 	mux.Handle("PUT /v1/email/preferences/{user_id}", authMW.Wrap(http.HandlerFunc(emailH.HandleUpdateEmailPreferences)))
+
+	// Job outreach routes - all authenticated, proxied to job-outreach-svc
+	mux.Handle("GET /v1/outreach/health", http.HandlerFunc(jobOutreachH.HandleHealth))
+	mux.Handle("POST /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
+	mux.Handle("GET /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
+	mux.Handle("PUT /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
+	mux.Handle("DELETE /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
 
 	// Admin routes
 	mux.Handle("GET /v1/admin/users", adminMW.Wrap(http.HandlerFunc(adminH.HandleListUsers)))
