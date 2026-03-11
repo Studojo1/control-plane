@@ -218,10 +218,10 @@ func main() {
 
 	// Job outreach routes - all authenticated, proxied to job-outreach-svc
 	mux.Handle("GET /v1/outreach/health", http.HandlerFunc(jobOutreachH.HandleHealth))
-	mux.Handle("POST /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
-	mux.Handle("GET /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
-	mux.Handle("PUT /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
-	mux.Handle("DELETE /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.proxyAll)))
+	mux.Handle("POST /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.ProxyAll)))
+	mux.Handle("GET /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.ProxyAll)))
+	mux.Handle("PUT /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.ProxyAll)))
+	mux.Handle("DELETE /v1/outreach/", authMW.Wrap(http.HandlerFunc(jobOutreachH.ProxyAll)))
 
 	// Admin routes
 	mux.Handle("GET /v1/admin/users", adminMW.Wrap(http.HandlerFunc(adminH.HandleListUsers)))
