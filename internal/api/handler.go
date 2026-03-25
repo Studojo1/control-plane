@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	razorpay "github.com/razorpay/razorpay-go"
 	"github.com/studojo/control-plane/internal/auth"
+	"github.com/studojo/control-plane/internal/dodo"
+	"github.com/studojo/control-plane/internal/geo"
 	"github.com/studojo/control-plane/internal/pricing"
 	"github.com/studojo/control-plane/internal/store"
 	"github.com/studojo/control-plane/internal/workflow"
@@ -29,11 +33,15 @@ type ReadyChecker interface {
 
 // Handler holds HTTP handlers for jobs, health, readiness, payments.
 type Handler struct {
-	Workflow     *workflow.Service
-	Ready        ReadyChecker
-	PaymentStore store.PaymentStore
-	RazorpayKey  string
-	RazorpaySecret string
+	Workflow          *workflow.Service
+	Ready             ReadyChecker
+	PaymentStore      store.PaymentStore
+	RazorpayKey       string
+	RazorpaySecret    string
+	DodoClient        *dodo.Client
+	DodoWebhookSecret string
+	DodoProductCareer string // Dodo product ID for career applications
+	FrontendURL       string // e.g. "https://studojo.pro" or "https://studojo.com"
 }
 
 // SubmitRequest JSON body for POST /v1/jobs.
@@ -114,9 +122,23 @@ type PaymentCreateRequest struct {
 
 // PaymentCreateResponse JSON response for POST /v1/payments/create-order.
 type PaymentCreateResponse struct {
-	OrderID string `json:"order_id"`
-	Amount  int    `json:"amount"`
-	KeyID   string `json:"key_id"` // Razorpay key ID for frontend
+	Provider    string `json:"provider"`               // "razorpay" or "dodo"
+	OrderID     string `json:"order_id,omitempty"`     // Razorpay order ID
+	Amount      int    `json:"amount,omitempty"`       // Razorpay amount in paise
+	KeyID       string `json:"key_id,omitempty"`       // Razorpay key ID for frontend
+	CheckoutURL string `json:"checkout_url,omitempty"` // Dodo checkout URL
+	SessionID   string `json:"session_id,omitempty"`   // Dodo session ID
+}
+
+// DodoVerifyRequest JSON body for POST /v1/payments/verify-dodo.
+type DodoVerifyRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// DodoVerifyResponse JSON response for POST /v1/payments/verify-dodo.
+type DodoVerifyResponse struct {
+	Status    string `json:"status"` // "paid", "pending", "failed"
+	PaymentID string `json:"payment_id,omitempty"`
 }
 
 // HandleHealth returns 200 OK (liveness, no deps).
@@ -517,7 +539,7 @@ func (h *Handler) HandleEditOutline(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleCreatePaymentOrder handles POST /v1/payments/create-order.
-// Creates a Razorpay order and returns order_id and key_id for frontend.
+// Routes to Razorpay (India) or Dodo Payments (international) based on geo.
 func (h *Handler) HandleCreatePaymentOrder(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == "" {
@@ -542,7 +564,6 @@ func (h *Handler) HandleCreatePaymentOrder(w http.ResponseWriter, r *http.Reques
 				req.Amount = calculatedAmount
 			} else if req.Amount < calculatedAmount {
 				slog.Warn("provided amount is less than calculated amount, using calculated", "provided", req.Amount, "calculated", calculatedAmount)
-				// Use calculated amount for security (prevent underpayment)
 				req.Amount = calculatedAmount
 			}
 		}
@@ -553,44 +574,130 @@ func (h *Handler) HandleCreatePaymentOrder(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Check if Razorpay key is configured
+	// Detect geo for gateway routing
+	country := geo.DetectCountry(r)
+	useRazorpay := geo.IsIndia(r)
+
+	slog.Info("creating payment order", "user_id", userID, "amount", req.Amount, "country", country, "provider", map[bool]string{true: "razorpay", false: "dodo"}[useRazorpay])
+
+	// ── Dodo Payments (international) ─────────────────────────────────
+	if !useRazorpay {
+		if h.DodoClient == nil {
+			slog.Error("dodo client not configured for international payment")
+			WriteError(w, http.StatusInternalServerError, ErrInternal, "international payment service not configured")
+			return
+		}
+
+		// Determine Dodo product ID and USD amount based on job type
+		var productID string
+		var usdCents int
+
+		switch req.JobType {
+		case "humanizer":
+			// Variable pricing: convert INR paise → USD cents (approx rate 85)
+			usdCents = int(math.Ceil(float64(req.Amount) / 85.0))
+			if usdCents < 100 {
+				usdCents = 100 // min $1
+			}
+			// Humanizer uses a variable-price product — product ID from env
+			productID = h.DodoProductCareer // Reuse career product or set a humanizer-specific one
+			// For humanizer we'll use the career product with overridden amount via metadata
+		default:
+			// Career / assignment-gen: fixed $12
+			usdCents = 1200
+			productID = h.DodoProductCareer
+		}
+
+		if productID == "" {
+			WriteError(w, http.StatusInternalServerError, ErrInternal, "dodo product not configured for this job type")
+			return
+		}
+
+		// User email not available in JWT context — use placeholder
+		userEmail := userID + "@studojo.com"
+
+		returnURL := h.FrontendURL + "/payment-success?session_id={CHECKOUT_SESSION_ID}"
+
+		checkout, err := h.DodoClient.CreateCheckout(dodo.CheckoutRequest{
+			ProductCart: []dodo.ProductCartItem{{ProductID: productID, Quantity: 1}},
+			Customer:    dodo.Customer{Email: userEmail, Name: "Student"},
+			ReturnURL:   returnURL,
+			Metadata: map[string]string{
+				"user_id":  userID,
+				"job_type": req.JobType,
+				"amount":   fmt.Sprintf("%d", usdCents),
+			},
+		})
+		if err != nil {
+			slog.Error("dodo checkout creation failed", "error", err)
+			WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to create payment order")
+			return
+		}
+
+		// Save payment record
+		geoCountry := country
+		payment := &store.Payment{
+			ID:              uuid.New(),
+			UserID:          userID,
+			Provider:        "dodo",
+			RazorpayOrderID: "dodo_" + checkout.SessionID, // placeholder for NOT NULL constraint
+			DodoCheckoutID:  &checkout.SessionID,
+			Amount:          usdCents,
+			Currency:        "USD",
+			GeoCountry:      &geoCountry,
+			Status:          "pending",
+			CreatedAt:       time.Now().UTC(),
+			UpdatedAt:       time.Now().UTC(),
+		}
+		if err := h.PaymentStore.CreatePayment(r.Context(), payment); err != nil {
+			slog.Error("create dodo payment record failed", "error", err)
+			// Still return checkout URL — webhook will handle it
+		}
+
+		WriteJSON(w, http.StatusOK, PaymentCreateResponse{
+			Provider:    "dodo",
+			CheckoutURL: checkout.CheckoutURL,
+			SessionID:   checkout.SessionID,
+		})
+		return
+	}
+
+	// ── Razorpay (India) ──────────────────────────────────────────────
 	if h.RazorpayKey == "" {
 		slog.Error("razorpay key not configured")
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "payment service not configured")
 		return
 	}
 
-	slog.Info("creating payment order", "user_id", userID, "amount", req.Amount, "key_id", h.RazorpayKey[:10]+"...")
-
-	// Create Razorpay order server-side
 	client := razorpay.NewClient(h.RazorpayKey, h.RazorpaySecret)
-	
+
 	orderData := map[string]interface{}{
 		"amount":   req.Amount,
 		"currency": "INR",
 		"receipt":  fmt.Sprintf("studojo_%s_%d", userID[:8], time.Now().Unix()),
 	}
-	
+
 	razorpayOrder, err := client.Order.Create(orderData, nil)
 	if err != nil {
 		slog.Error("failed to create razorpay order", "error", err)
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to create payment order")
 		return
 	}
-	
+
 	orderID, ok := razorpayOrder["id"].(string)
 	if !ok || orderID == "" {
 		slog.Error("invalid order response from razorpay", "response", razorpayOrder)
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "invalid order response")
 		return
 	}
-	
+
 	slog.Info("razorpay order created", "order_id", orderID)
-	
+
 	WriteJSON(w, http.StatusOK, PaymentCreateResponse{
-		OrderID: orderID,
-		Amount:  req.Amount,
-		KeyID:   h.RazorpayKey,
+		Provider: "razorpay",
+		OrderID:  orderID,
+		Amount:   req.Amount,
+		KeyID:    h.RazorpayKey,
 	})
 }
 
@@ -698,6 +805,191 @@ func (h *Handler) verifyRazorpaySignature(orderID, paymentID, signature string) 
 
 	// Compare signatures (constant-time comparison)
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
+}
+
+// HandleVerifyDodoPayment handles POST /v1/payments/verify-dodo.
+// Frontend polls this after Dodo redirect to check if webhook confirmed payment.
+func (h *Handler) HandleVerifyDodoPayment(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromContext(r.Context())
+	if userID == "" {
+		WriteError(w, http.StatusUnauthorized, ErrUnauthorized, "unauthorized")
+		return
+	}
+
+	var req DodoVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "invalid JSON body")
+		return
+	}
+
+	if req.SessionID == "" {
+		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "session_id is required")
+		return
+	}
+
+	payment, err := h.PaymentStore.GetPaymentByDodoCheckoutID(r.Context(), req.SessionID)
+	if err != nil {
+		slog.Error("get dodo payment failed", "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to get payment")
+		return
+	}
+	if payment == nil {
+		WriteError(w, http.StatusNotFound, ErrJobNotFound, "payment not found")
+		return
+	}
+	if payment.UserID != userID {
+		WriteError(w, http.StatusForbidden, ErrForbidden, "payment does not belong to user")
+		return
+	}
+
+	status := "pending"
+	if payment.Status == "completed" {
+		status = "paid"
+	} else if payment.Status == "failed" {
+		status = "failed"
+	}
+
+	WriteJSON(w, http.StatusOK, DodoVerifyResponse{
+		Status:    status,
+		PaymentID: payment.ID.String(),
+	})
+}
+
+// HandleDodoWebhook handles POST /v1/payments/webhook/dodo.
+// Verifies Standard Webhooks signature and processes payment events.
+func (h *Handler) HandleDodoWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("failed to read dodo webhook body", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Verify Standard Webhooks signature
+	if h.DodoWebhookSecret != "" {
+		webhookID := r.Header.Get("webhook-id")
+		webhookTimestamp := r.Header.Get("webhook-timestamp")
+		webhookSignature := r.Header.Get("webhook-signature")
+
+		if !h.verifyStandardWebhookSignature(body, webhookID, webhookTimestamp, webhookSignature) {
+			slog.Error("dodo webhook signature verification failed")
+			http.Error(w, "invalid signature", http.StatusBadRequest)
+			return
+		}
+	}
+
+	var payload struct {
+		EventType string          `json:"event_type"`
+		Type      string          `json:"type"`
+		Data      json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		slog.Error("failed to parse dodo webhook", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	eventType := payload.EventType
+	if eventType == "" {
+		eventType = payload.Type
+	}
+
+	slog.Info("dodo webhook received", "event_type", eventType)
+
+	switch eventType {
+	case "payment.succeeded":
+		var data struct {
+			CheckoutID string            `json:"checkout_id"`
+			PaymentID  string            `json:"payment_id"`
+			Metadata   map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(payload.Data, &data); err != nil {
+			slog.Error("failed to parse dodo payment data", "error", err)
+			break
+		}
+
+		checkoutID := data.CheckoutID
+		if checkoutID == "" {
+			if data.Metadata != nil {
+				checkoutID = data.Metadata["checkout_session_id"]
+			}
+		}
+		if checkoutID == "" {
+			slog.Warn("dodo payment.succeeded without checkout_id")
+			break
+		}
+
+		payment, err := h.PaymentStore.GetPaymentByDodoCheckoutID(r.Context(), checkoutID)
+		if err != nil {
+			slog.Error("get payment for dodo webhook failed", "error", err)
+			break
+		}
+		if payment == nil {
+			slog.Warn("no payment found for dodo checkout", "checkout_id", checkoutID)
+			break
+		}
+		if payment.Status == "completed" {
+			slog.Info("dodo payment already completed", "checkout_id", checkoutID)
+			break
+		}
+
+		if err := h.PaymentStore.UpdateDodoPayment(r.Context(), payment.ID, data.PaymentID, "completed"); err != nil {
+			slog.Error("failed to update dodo payment", "error", err)
+			break
+		}
+		slog.Info("dodo payment completed", "checkout_id", checkoutID, "user_id", payment.UserID)
+
+	case "payment.failed":
+		var data struct {
+			CheckoutID string `json:"checkout_id"`
+		}
+		if err := json.Unmarshal(payload.Data, &data); err != nil {
+			break
+		}
+		if data.CheckoutID != "" {
+			payment, err := h.PaymentStore.GetPaymentByDodoCheckoutID(r.Context(), data.CheckoutID)
+			if err == nil && payment != nil && payment.Status == "pending" {
+				_ = h.PaymentStore.UpdateDodoPayment(r.Context(), payment.ID, "", "failed")
+				slog.Warn("dodo payment failed", "checkout_id", data.CheckoutID)
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// verifyStandardWebhookSignature verifies Standard Webhooks (used by Dodo).
+func (h *Handler) verifyStandardWebhookSignature(body []byte, msgID, timestamp, signature string) bool {
+	if msgID == "" || timestamp == "" || signature == "" {
+		return false
+	}
+
+	// Decode secret (may have whsec_ prefix, is base64 encoded)
+	secret := h.DodoWebhookSecret
+	secret = strings.TrimPrefix(secret, "whsec_")
+	secretBytes, err := base64.StdEncoding.DecodeString(secret)
+	if err != nil {
+		slog.Error("failed to decode webhook secret", "error", err)
+		return false
+	}
+
+	// Compute expected signature: HMAC-SHA256 of "msg_id.timestamp.body"
+	signedContent := fmt.Sprintf("%s.%s.%s", msgID, timestamp, string(body))
+	mac := hmac.New(sha256.New, secretBytes)
+	mac.Write([]byte(signedContent))
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	// Signature header may contain multiple signatures separated by spaces (v1,sig)
+	for _, sig := range strings.Split(signature, " ") {
+		parts := strings.SplitN(sig, ",", 2)
+		if len(parts) == 2 && parts[0] == "v1" {
+			if hmac.Equal([]byte(parts[1]), []byte(expected)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Handler) writeWorkflowError(w http.ResponseWriter, err error) {

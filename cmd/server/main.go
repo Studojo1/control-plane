@@ -16,6 +16,7 @@ import (
 
 	"github.com/studojo/control-plane/internal/api"
 	"github.com/studojo/control-plane/internal/auth"
+	"github.com/studojo/control-plane/internal/dodo"
 	"github.com/studojo/control-plane/internal/k8s"
 	"github.com/studojo/control-plane/internal/messaging"
 	"github.com/studojo/control-plane/internal/ready"
@@ -123,12 +124,34 @@ func main() {
 		slog.Warn("Razorpay secret not set - payment signature verification will not work", "mode", razorpayMode)
 	}
 
+	// Dodo Payments configuration
+	dodoAPIKey := os.Getenv("DODO_PAYMENTS_API_KEY")
+	dodoTestMode := os.Getenv("DODO_TEST_MODE") != "false" // default true
+	dodoWebhookSecret := os.Getenv("DODO_WEBHOOK_SECRET")
+	dodoProductCareer := os.Getenv("DODO_PRODUCT_CAREER")
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000"
+	}
+
+	var dodoClient *dodo.Client
+	if dodoAPIKey != "" {
+		dodoClient = dodo.NewClient(dodoAPIKey, dodoTestMode)
+		slog.Info("Dodo Payments client initialized", "test_mode", dodoTestMode)
+	} else {
+		slog.Warn("Dodo Payments API key not set - international payments will not work")
+	}
+
 	h := &api.Handler{
-		Workflow:       wf,
-		Ready:          readyChecker,
-		PaymentStore:   st,
-		RazorpayKey:    razorpayKey,
-		RazorpaySecret: razorpaySecret,
+		Workflow:          wf,
+		Ready:             readyChecker,
+		PaymentStore:      st,
+		RazorpayKey:       razorpayKey,
+		RazorpaySecret:    razorpaySecret,
+		DodoClient:        dodoClient,
+		DodoWebhookSecret: dodoWebhookSecret,
+		DodoProductCareer: dodoProductCareer,
+		FrontendURL:       frontendURL,
 	}
 
 	adminH := &api.AdminHandler{
@@ -201,6 +224,8 @@ func main() {
 	mux.Handle("POST /v1/outlines/edit", authMW.Wrap(http.HandlerFunc(h.HandleEditOutline)))
 	mux.Handle("POST /v1/payments/create-order", authMW.Wrap(http.HandlerFunc(h.HandleCreatePaymentOrder)))
 	mux.Handle("POST /v1/payments/verify", authMW.Wrap(http.HandlerFunc(h.HandleVerifyPayment)))
+	mux.Handle("POST /v1/payments/verify-dodo", authMW.Wrap(http.HandlerFunc(h.HandleVerifyDodoPayment)))
+	mux.HandleFunc("POST /v1/payments/webhook/dodo", h.HandleDodoWebhook)
 	mux.Handle("POST /v1/humanizer/calculate-price", authMW.Wrap(http.HandlerFunc(h.HandleCalculateHumanizerPrice)))
 	mux.Handle("POST /v1/humanizer/upload-file", authMW.Wrap(http.HandlerFunc(h.HandleUploadHumanizerFile)))
 	mux.Handle("POST /v1/jobs", authMW.Wrap(http.HandlerFunc(h.HandleSubmitJob)))
