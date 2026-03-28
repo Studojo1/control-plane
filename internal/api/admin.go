@@ -99,26 +99,43 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	search := r.URL.Query().Get("search")
 	searchPattern := "%" + search + "%"
+	roleFilter := r.URL.Query().Get("role") // "admin", "ops", "dev", or ""
 
 	var rows *sql.Rows
 	var err error
 
 	baseJoin := `FROM "user" u LEFT JOIN user_profile up ON u.id = up.user_id`
-	whereClause := ""
+	conditions := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
 	if search != "" {
-		whereClause = ` WHERE (
-			u.name ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			u.email ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			u.phone_number ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.full_name ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.college ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.course ILIKE $` + strconv.Itoa(argIdx) + `
-		)`
+		conditions = append(conditions, `(
+			u.name ILIKE $`+strconv.Itoa(argIdx)+` OR
+			u.email ILIKE $`+strconv.Itoa(argIdx)+` OR
+			u.phone_number ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.full_name ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.college ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.course ILIKE $`+strconv.Itoa(argIdx)+`
+		)`)
 		args = append(args, searchPattern)
 		argIdx++
+	}
+
+	if roleFilter == "none" {
+		conditions = append(conditions, `u.role IS NULL`)
+	} else if roleFilter != "" {
+		conditions = append(conditions, `u.role = $`+strconv.Itoa(argIdx))
+		args = append(args, roleFilter)
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + conditions[0]
+		for _, c := range conditions[1:] {
+			whereClause += " AND " + c
+		}
 	}
 
 	// Count total matching users
