@@ -87,7 +87,7 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}
@@ -103,19 +103,13 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	var err error
 
-	query := `
-		SELECT u.id, u.name, u.email, u.email_verified, u.phone_number, u.phone_number_verified,
-		       u.role, u.banned, u.ban_reason, u.ban_expires, u.created_at, u.updated_at,
-		       up.full_name, up.college, up.year_of_study, up.course
-		FROM "user" u
-		LEFT JOIN user_profile up ON u.id = up.user_id
-	`
-
+	baseJoin := `FROM "user" u LEFT JOIN user_profile up ON u.id = up.user_id`
+	whereClause := ""
 	args := []interface{}{}
 	argIdx := 1
 
 	if search != "" {
-		query += ` WHERE (
+		whereClause = ` WHERE (
 			u.name ILIKE $` + strconv.Itoa(argIdx) + ` OR
 			u.email ILIKE $` + strconv.Itoa(argIdx) + ` OR
 			u.phone_number ILIKE $` + strconv.Itoa(argIdx) + ` OR
@@ -127,7 +121,19 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 
-	query += ` ORDER BY u.created_at DESC LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
+	// Count total matching users
+	var total int
+	countQuery := `SELECT COUNT(*) ` + baseJoin + whereClause
+	if err := h.DB.QueryRowContext(r.Context(), countQuery, args[:argIdx-1]...).Scan(&total); err != nil {
+		slog.Error("failed to count users", "error", err)
+		total = 0
+	}
+
+	query := `SELECT u.id, u.name, u.email, u.email_verified, u.phone_number, u.phone_number_verified,
+		       u.role, u.banned, u.ban_reason, u.ban_expires, u.created_at, u.updated_at,
+		       up.full_name, up.college, up.year_of_study, up.course ` +
+		baseJoin + whereClause +
+		` ORDER BY u.created_at DESC LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err = h.DB.QueryContext(r.Context(), query, args...)
@@ -191,6 +197,7 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"users":  users,
+		"total":  total,
 		"limit":  limit,
 		"offset": offset,
 	})
