@@ -131,6 +131,11 @@ func main() {
 		RazorpaySecret: razorpaySecret,
 	}
 
+	emailerServiceURL := os.Getenv("EMAILER_SERVICE_URL")
+	if emailerServiceURL == "" {
+		emailerServiceURL = "http://emailer-service:8087"
+	}
+
 	adminH := &api.AdminHandler{
 		DB:                db,
 		EmailerServiceURL: emailerServiceURL,
@@ -163,7 +168,6 @@ func main() {
 	}
 
 	// Initialize email handler
-	emailerServiceURL := os.Getenv("EMAILER_SERVICE_URL")
 	emailH := api.NewEmailHandler(emailerServiceURL)
 	if emailerServiceURL != "" {
 		slog.Info("email handler initialized", "emailer_service_url", emailerServiceURL)
