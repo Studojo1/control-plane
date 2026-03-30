@@ -1159,3 +1159,62 @@ func (h *AdminHandler) HandleTriggerEmail(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
 }
+
+// HandleBulkSendPreview handles GET /v1/admin/emails/bulk-send/preview.
+// Proxies to emailer-service to get count of users matching filters.
+func (h *AdminHandler) HandleBulkSendPreview(w http.ResponseWriter, r *http.Request) {
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	targetURL := strings.TrimSuffix(emailerURL, "/") + "/v1/email/bulk-send/preview"
+	if q := r.URL.RawQuery; q != "" {
+		targetURL += "?" + q
+	}
+
+	resp, err := http.Get(targetURL)
+	if err != nil {
+		slog.Error("failed to call emailer-service bulk preview", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// HandleBulkSend handles POST /v1/admin/emails/bulk-send.
+// Proxies to emailer-service to send emails to filtered users.
+func (h *AdminHandler) HandleBulkSend(w http.ResponseWriter, r *http.Request) {
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", "failed to read body")
+		return
+	}
+
+	resp, err := http.Post(
+		strings.TrimSuffix(emailerURL, "/")+"/v1/email/bulk-send",
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		slog.Error("failed to call emailer-service bulk send", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}

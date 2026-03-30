@@ -239,6 +239,8 @@ func main() {
 	mux.Handle("GET /v1/admin/emails/scheduled", adminMW.Wrap(http.HandlerFunc(adminH.HandleListScheduledEmails)))
 	mux.Handle("DELETE /v1/admin/emails/scheduled/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleCancelScheduledEmail)))
 	mux.Handle("POST /v1/admin/emails/trigger", adminMW.Wrap(http.HandlerFunc(adminH.HandleTriggerEmail)))
+	mux.Handle("GET /v1/admin/emails/bulk-send/preview", adminMW.Wrap(http.HandlerFunc(adminH.HandleBulkSendPreview)))
+	mux.Handle("POST /v1/admin/emails/bulk-send", adminMW.Wrap(http.HandlerFunc(adminH.HandleBulkSend)))
 
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))
