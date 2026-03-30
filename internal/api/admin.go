@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -18,7 +20,8 @@ import (
 
 // AdminHandler handles admin-only endpoints.
 type AdminHandler struct {
-	DB *sql.DB
+	DB                *sql.DB
+	EmailerServiceURL string
 }
 
 // User represents a user in admin responses.
@@ -1101,4 +1104,58 @@ func (h *AdminHandler) HandleCancelScheduledEmail(w http.ResponseWriter, r *http
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// TriggerEmailRequest is the payload for POST /v1/admin/emails/trigger.
+// routing_key: one of event.user.signup, event.resume.optimized, event.internship.applied
+// event: the raw event JSON (e.g. {"user_id":"...", "email":"...", "name":"..."})
+type TriggerEmailRequest struct {
+	RoutingKey string          `json:"routing_key"`
+	Event      json.RawMessage `json:"event"`
+}
+
+// HandleTriggerEmail handles POST /v1/admin/emails/trigger.
+// Forwards the event directly to the emailer-service for immediate processing.
+func (h *AdminHandler) HandleTriggerEmail(w http.ResponseWriter, r *http.Request) {
+	var req TriggerEmailRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if req.RoutingKey == "" {
+		WriteError(w, http.StatusBadRequest, "bad_request", "routing_key is required")
+		return
+	}
+	if len(req.Event) == 0 {
+		WriteError(w, http.StatusBadRequest, "bad_request", "event is required")
+		return
+	}
+
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to marshal request")
+		return
+	}
+
+	resp, err := http.Post(
+		strings.TrimSuffix(emailerURL, "/")+"/v1/email/events",
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		slog.Error("failed to call emailer-service", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
 }

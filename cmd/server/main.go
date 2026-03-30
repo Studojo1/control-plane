@@ -132,7 +132,8 @@ func main() {
 	}
 
 	adminH := &api.AdminHandler{
-		DB: db,
+		DB:                db,
+		EmailerServiceURL: emailerServiceURL,
 	}
 
 	// Initialize Kubernetes client for dev panel
@@ -233,6 +234,7 @@ func main() {
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
 	mux.Handle("GET /v1/admin/emails/scheduled", adminMW.Wrap(http.HandlerFunc(adminH.HandleListScheduledEmails)))
 	mux.Handle("DELETE /v1/admin/emails/scheduled/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleCancelScheduledEmail)))
+	mux.Handle("POST /v1/admin/emails/trigger", adminMW.Wrap(http.HandlerFunc(adminH.HandleTriggerEmail)))
 
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))
