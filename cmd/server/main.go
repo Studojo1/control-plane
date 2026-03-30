@@ -231,6 +231,8 @@ func main() {
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
 	mux.Handle("GET /v1/admin/jobs/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetJob)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
+	mux.Handle("GET /v1/admin/emails/scheduled", adminMW.Wrap(http.HandlerFunc(adminH.HandleListScheduledEmails)))
+	mux.Handle("DELETE /v1/admin/emails/scheduled/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleCancelScheduledEmail)))
 
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))

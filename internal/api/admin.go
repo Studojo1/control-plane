@@ -969,3 +969,136 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 
 	WriteJSON(w, http.StatusOK, stats)
 }
+
+// ScheduledEmail represents a row in the scheduled_emails table with user info.
+type ScheduledEmail struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	UserEmail   string     `json:"user_email"`
+	UserName    string     `json:"user_name"`
+	EmailType   string     `json:"email_type"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	SentAt      *time.Time `json:"sent_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// HandleListScheduledEmails handles GET /v1/admin/emails/scheduled.
+// Query params: status=pending|sent (default all), limit, offset, user_id
+func (h *AdminHandler) HandleListScheduledEmails(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	limit := 100
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	status := r.URL.Query().Get("status") // "pending", "sent", or ""
+	userID := r.URL.Query().Get("user_id")
+
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+
+	switch status {
+	case "pending":
+		where += fmt.Sprintf(" AND se.sent_at IS NULL AND se.scheduled_at > NOW()")
+	case "due":
+		where += fmt.Sprintf(" AND se.sent_at IS NULL AND se.scheduled_at <= NOW()")
+	case "sent":
+		where += " AND se.sent_at IS NOT NULL"
+	}
+
+	if userID != "" {
+		where += fmt.Sprintf(" AND se.user_id = $%d", argIdx)
+		args = append(args, userID)
+		argIdx++
+	}
+
+	args = append(args, limit, offset)
+
+	query := fmt.Sprintf(`
+		SELECT
+			se.id,
+			se.user_id,
+			COALESCE(u.email, '') AS user_email,
+			COALESCE(u.name, '') AS user_name,
+			se.email_type,
+			se.scheduled_at,
+			se.sent_at,
+			se.created_at
+		FROM scheduled_emails se
+		LEFT JOIN "user" u ON u.id = se.user_id
+		%s
+		ORDER BY se.scheduled_at ASC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+
+	rows, err := h.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		slog.Error("failed to list scheduled emails", "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to list scheduled emails")
+		return
+	}
+	defer rows.Close()
+
+	emails := []ScheduledEmail{}
+	for rows.Next() {
+		var e ScheduledEmail
+		if err := rows.Scan(&e.ID, &e.UserID, &e.UserEmail, &e.UserName, &e.EmailType, &e.ScheduledAt, &e.SentAt, &e.CreatedAt); err != nil {
+			slog.Error("failed to scan scheduled email", "error", err)
+			continue
+		}
+		emails = append(emails, e)
+	}
+
+	// Count total
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM scheduled_emails se %s`, where)
+	countArgs := args[:len(args)-2] // remove limit/offset
+	var total int
+	if err := h.DB.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		slog.Warn("failed to count scheduled emails", "error", err)
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"emails": emails,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+// HandleCancelScheduledEmail handles DELETE /v1/admin/emails/scheduled/{id}.
+func (h *AdminHandler) HandleCancelScheduledEmail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	if id == "" {
+		WriteError(w, http.StatusBadRequest, "bad_request", "missing id")
+		return
+	}
+
+	result, err := h.DB.ExecContext(ctx,
+		`DELETE FROM scheduled_emails WHERE id = $1 AND sent_at IS NULL`,
+		id,
+	)
+	if err != nil {
+		slog.Error("failed to cancel scheduled email", "id", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to cancel email")
+		return
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		WriteError(w, http.StatusNotFound, "not_found", "email not found or already sent")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
