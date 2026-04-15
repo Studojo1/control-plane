@@ -149,6 +149,16 @@ func (h *EmailHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reque
 	h.proxyRequest(w, r, "/v1/email/change-password")
 }
 
+// HandlePublishEvent handles POST /v1/email/events (public endpoint).
+// Called by the frontend auth middleware on signup/other events to trigger emails.
+func (h *EmailHandler) HandlePublishEvent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, ErrValidationFailed, "method not allowed")
+		return
+	}
+	h.proxyRequest(w, r, "/v1/email/events")
+}
+
 // HandleTrackOpen handles GET /v1/email/track/{track_id} (public endpoint).
 // No auth required — this is hit by email clients loading the tracking pixel.
 func (h *EmailHandler) HandleTrackOpen(w http.ResponseWriter, r *http.Request) {
