@@ -213,6 +213,7 @@ func main() {
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
 
 	// Email routes - public endpoints (no auth)
+	mux.Handle("GET /v1/email/track/{track_id}", http.HandlerFunc(emailH.HandleTrackOpen))
 	mux.Handle("POST /v1/email/forgot-password", http.HandlerFunc(emailH.HandleForgotPassword))
 	mux.Handle("POST /v1/email/reset-password", http.HandlerFunc(emailH.HandleResetPassword))
 

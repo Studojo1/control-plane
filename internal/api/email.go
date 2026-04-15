@@ -149,6 +149,17 @@ func (h *EmailHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reque
 	h.proxyRequest(w, r, "/v1/email/change-password")
 }
 
+// HandleTrackOpen handles GET /v1/email/track/{track_id} (public endpoint).
+// No auth required — this is hit by email clients loading the tracking pixel.
+func (h *EmailHandler) HandleTrackOpen(w http.ResponseWriter, r *http.Request) {
+	trackID := r.PathValue("track_id")
+	if trackID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	h.proxyRequest(w, r, "/v1/email/track/"+trackID)
+}
+
 // HandleGetEmailPreferences handles GET /v1/email/preferences/{user_id} (authenticated endpoint).
 // Verifies that user_id in path matches authenticated user.
 func (h *EmailHandler) HandleGetEmailPreferences(w http.ResponseWriter, r *http.Request) {
