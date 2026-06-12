@@ -73,6 +73,14 @@ jobs:
             --name ${{ secrets.AKS_CLUSTER_NAME }} \
             --overwrite-existing
 
+      - name: Ensure emailer internal secret
+        run: |
+          # Injected on every proxied emailer call so the emailer's gated routes
+          # accept this trusted gateway. Must match the emailer's INTERNAL_SECRET
+          # (same EMAILER_INTERNAL_SECRET GitHub secret). No-op when unchanged.
+          kubectl set env deployment/${{ env.SERVICE_NAME }} -n studojo \
+            EMAILER_INTERNAL_SECRET="${{ secrets.EMAILER_INTERNAL_SECRET }}"
+
       - name: Deploy to Kubernetes
         run: |
           kubectl set image deployment/${{ env.SERVICE_NAME }} ${{ env.SERVICE_NAME }}=${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:${{ env.IMAGE_TAG }} -n studojo
