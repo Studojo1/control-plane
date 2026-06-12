@@ -22,6 +22,24 @@ import (
 type AdminHandler struct {
 	DB                *sql.DB
 	EmailerServiceURL string
+	// EmailerInternalSecret is sent as X-Internal-Secret on proxied emailer calls
+	// so the emailer's gated routes (events, bulk-send) accept this trusted,
+	// admin-authenticated gateway.
+	EmailerInternalSecret string
+}
+
+// emailerRequest issues a request to the emailer service with the internal
+// secret header attached. method is GET/POST/etc; body may be nil.
+func (h *AdminHandler) emailerRequest(method, url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if h.EmailerInternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", h.EmailerInternalSecret)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 // User represents a user in admin responses.
@@ -1142,9 +1160,9 @@ func (h *AdminHandler) HandleTriggerEmail(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp, err := http.Post(
+	resp, err := h.emailerRequest(
+		http.MethodPost,
 		strings.TrimSuffix(emailerURL, "/")+"/v1/email/events",
-		"application/json",
 		bytes.NewReader(payload),
 	)
 	if err != nil {
@@ -1173,7 +1191,7 @@ func (h *AdminHandler) HandleBulkSendPreview(w http.ResponseWriter, r *http.Requ
 		targetURL += "?" + q
 	}
 
-	resp, err := http.Get(targetURL)
+	resp, err := h.emailerRequest(http.MethodGet, targetURL, nil)
 	if err != nil {
 		slog.Error("failed to call emailer-service bulk preview", "error", err)
 		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
@@ -1201,9 +1219,9 @@ func (h *AdminHandler) HandleBulkSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.Post(
+	resp, err := h.emailerRequest(
+		http.MethodPost,
 		strings.TrimSuffix(emailerURL, "/")+"/v1/email/bulk-send",
-		"application/json",
 		bytes.NewReader(payload),
 	)
 	if err != nil {

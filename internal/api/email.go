@@ -14,16 +14,22 @@ import (
 // EmailHandler handles email-related proxy requests to the emailer service.
 type EmailHandler struct {
 	EmailerServiceURL string
-	HTTPClient        *http.Client
+	// InternalSecret is injected as X-Internal-Secret on every proxied request so
+	// the emailer's gated routes accept calls that come through this trusted
+	// gateway. The direct email.studojo.com ingress carries no secret, so those
+	// routes stay closed to the public.
+	InternalSecret string
+	HTTPClient     *http.Client
 }
 
 // NewEmailHandler creates a new EmailHandler.
-func NewEmailHandler(emailerServiceURL string) *EmailHandler {
+func NewEmailHandler(emailerServiceURL, internalSecret string) *EmailHandler {
 	if emailerServiceURL == "" {
 		emailerServiceURL = "http://emailer-service:8087"
 	}
 	return &EmailHandler{
 		EmailerServiceURL: emailerServiceURL,
+		InternalSecret:    internalSecret,
 		HTTPClient:        &http.Client{},
 	}
 }
@@ -57,6 +63,12 @@ func (h *EmailHandler) proxyRequest(w http.ResponseWriter, r *http.Request, path
 				req.Header.Add(key, value)
 			}
 		}
+	}
+
+	// Inject the service-to-service secret so the emailer's gated routes accept
+	// this proxied call. Set (not Add) so any client-supplied value is overridden.
+	if h.InternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", h.InternalSecret)
 	}
 
 	// Forward request
@@ -157,6 +169,18 @@ func (h *EmailHandler) HandlePublishEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.proxyRequest(w, r, "/v1/email/events")
+}
+
+// HandleUnsubscribe handles GET and POST /v1/email/unsubscribe (public endpoint).
+// No auth required — the link is signed (HMAC) and verified by the emailer. GET
+// renders a confirm page; POST performs the opt-out (RFC 8058 one-click). The
+// query string (uid, signed token) is preserved by proxying RequestURI.
+func (h *EmailHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	path := "/v1/email/unsubscribe"
+	if r.URL.RawQuery != "" {
+		path += "?" + r.URL.RawQuery
+	}
+	h.proxyRequest(w, r, path)
 }
 
 // HandleTrackOpen handles GET /v1/email/track/{track_id} (public endpoint).
