@@ -684,8 +684,18 @@ func (h *Handler) HandleVerifyPayment(w http.ResponseWriter, r *http.Request) {
 // verifyRazorpaySignature verifies Razorpay payment signature using HMAC SHA256.
 func (h *Handler) verifyRazorpaySignature(orderID, paymentID, signature string) bool {
 	if h.RazorpaySecret == "" {
-		slog.Warn("razorpay secret not configured, skipping signature verification")
-		return true // Allow in development if secret not set
+		// FAIL CLOSED: with no secret we cannot verify the signature, so we must
+		// REJECT the payment, not approve it. The old behaviour returned true
+		// ("allow in development"), which meant a misconfigured prod deploy would
+		// accept ANY forged signature and mark arbitrary payments paid. An explicit
+		// opt-in (RAZORPAY_ALLOW_UNVERIFIED=true) is required to bypass — never on
+		// by default, and never something an empty/missing secret can trigger.
+		if os.Getenv("RAZORPAY_ALLOW_UNVERIFIED") == "true" {
+			slog.Warn("razorpay secret not configured but RAZORPAY_ALLOW_UNVERIFIED=true — skipping verification (DEV ONLY)")
+			return true
+		}
+		slog.Error("razorpay secret not configured — rejecting payment (cannot verify signature)")
+		return false
 	}
 
 	// Create message: order_id + "|" + payment_id
