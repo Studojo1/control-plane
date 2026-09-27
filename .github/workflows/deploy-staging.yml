@@ -3,6 +3,10 @@ name: Build and Deploy (Staging)
 # Staging had no pipeline: its control-plane was a hand-set image from March,
 # three months behind production. This builds the staging branch and deploys
 # it to the staging namespace (studojo.pro).
+#
+# Logs in as github-actions-studojo-staging-2 (AZURE_CLIENT_ID_STAGING): the
+# shared github-actions-studojo app is at Azure's 20 federated-credential limit.
+# That identity has only AcrPush on acrstudojo and AKS Cluster User on studojo-aks.
 
 on:
   push:
@@ -29,7 +33,7 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_STAGING }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -56,7 +60,7 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID_STAGING }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
