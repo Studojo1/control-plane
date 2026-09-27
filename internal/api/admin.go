@@ -319,11 +319,14 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Role is decoded as RawMessage so an explicit JSON null (clear the role,
+	// making the account a plain user) is distinguishable from an absent field
+	// (leave the role untouched). A *string cannot tell those two apart.
 	var req struct {
-		Role       *string    `json:"role,omitempty"`
-		Banned     *bool      `json:"banned,omitempty"`
-		BanReason  *string    `json:"ban_reason,omitempty"`
-		BanExpires *time.Time `json:"ban_expires,omitempty"`
+		Role       json.RawMessage `json:"role,omitempty"`
+		Banned     *bool           `json:"banned,omitempty"`
+		BanReason  *string         `json:"ban_reason,omitempty"`
+		BanExpires *time.Time      `json:"ban_expires,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "invalid JSON body")
@@ -357,8 +360,25 @@ func (h *AdminHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) 
 		argIdx++
 	}
 
-	if req.Role != nil {
-		addFieldUpdate("role", *req.Role)
+	if len(req.Role) > 0 {
+		if string(req.Role) == "null" {
+			// Explicit null clears the role; stored as NULL so the account
+			// matches the canonical "no role" filter (u.role IS NULL).
+			addFieldUpdate("role", nil)
+		} else {
+			var role string
+			if err := json.Unmarshal(req.Role, &role); err != nil {
+				WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "role must be a string or null")
+				return
+			}
+			if role == "" {
+				// Treat "" the same as null so a plain user is never stored as
+				// an empty string, which would match neither IS NULL nor a role.
+				addFieldUpdate("role", nil)
+			} else {
+				addFieldUpdate("role", role)
+			}
+		}
 	}
 	if req.Banned != nil {
 		addFieldUpdate("banned", *req.Banned)
