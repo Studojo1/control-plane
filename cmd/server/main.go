@@ -154,8 +154,23 @@ func main() {
 		FrontendURL:       frontendURL,
 	}
 
+	emailerServiceURL := os.Getenv("EMAILER_SERVICE_URL")
+	if emailerServiceURL == "" {
+		emailerServiceURL = "http://emailer-service:8087"
+	}
+
+	// Shared service-to-service secret for the emailer's gated routes. Injected on
+	// every proxied emailer call so the emailer trusts this gateway; the direct
+	// email.studojo.com ingress carries no secret and stays locked out of them.
+	emailerInternalSecret := os.Getenv("EMAILER_INTERNAL_SECRET")
+	if emailerInternalSecret == "" {
+		slog.Warn("EMAILER_INTERNAL_SECRET is not set — proxied emailer calls to gated routes will be rejected")
+	}
+
 	adminH := &api.AdminHandler{
-		DB: db,
+		DB:                    db,
+		EmailerServiceURL:     emailerServiceURL,
+		EmailerInternalSecret: emailerInternalSecret,
 	}
 
 	// Initialize Kubernetes client for dev panel
@@ -185,8 +200,7 @@ func main() {
 	}
 
 	// Initialize email handler
-	emailerServiceURL := os.Getenv("EMAILER_SERVICE_URL")
-	emailH := api.NewEmailHandler(emailerServiceURL)
+	emailH := api.NewEmailHandler(emailerServiceURL, emailerInternalSecret)
 	if emailerServiceURL != "" {
 		slog.Info("email handler initialized", "emailer_service_url", emailerServiceURL)
 	} else {
@@ -233,8 +247,14 @@ func main() {
 	mux.Handle("GET /v1/jobs/{id}", authMW.Wrap(http.HandlerFunc(h.HandleGetJob)))
 
 	// Email routes - public endpoints (no auth)
+	mux.Handle("POST /v1/email/events", http.HandlerFunc(emailH.HandlePublishEvent))
+	mux.Handle("GET /v1/email/track/{track_id}", http.HandlerFunc(emailH.HandleTrackOpen))
 	mux.Handle("POST /v1/email/forgot-password", http.HandlerFunc(emailH.HandleForgotPassword))
 	mux.Handle("POST /v1/email/reset-password", http.HandlerFunc(emailH.HandleResetPassword))
+	// One-click unsubscribe (RFC 8058) — signed link, no auth. GET = confirm page,
+	// POST = perform opt-out (Gmail/Yahoo native button + the confirm form).
+	mux.Handle("GET /v1/email/unsubscribe", http.HandlerFunc(emailH.HandleUnsubscribe))
+	mux.Handle("POST /v1/email/unsubscribe", http.HandlerFunc(emailH.HandleUnsubscribe))
 
 	// Email routes - authenticated endpoints
 	mux.Handle("POST /v1/email/change-password", authMW.Wrap(http.HandlerFunc(emailH.HandleChangePassword)))
@@ -256,6 +276,11 @@ func main() {
 	mux.Handle("GET /v1/admin/careers", adminMW.Wrap(http.HandlerFunc(adminH.HandleListCareers)))
 	mux.Handle("GET /v1/admin/jobs/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetJob)))
 	mux.Handle("GET /v1/admin/stats", adminMW.Wrap(http.HandlerFunc(adminH.HandleGetDashboardStats)))
+	mux.Handle("GET /v1/admin/emails/scheduled", adminMW.Wrap(http.HandlerFunc(adminH.HandleListScheduledEmails)))
+	mux.Handle("DELETE /v1/admin/emails/scheduled/{id}", adminMW.Wrap(http.HandlerFunc(adminH.HandleCancelScheduledEmail)))
+	mux.Handle("POST /v1/admin/emails/trigger", adminMW.Wrap(http.HandlerFunc(adminH.HandleTriggerEmail)))
+	mux.Handle("GET /v1/admin/emails/bulk-send/preview", adminMW.Wrap(http.HandlerFunc(adminH.HandleBulkSendPreview)))
+	mux.Handle("POST /v1/admin/emails/bulk-send", adminMW.Wrap(http.HandlerFunc(adminH.HandleBulkSend)))
 
 	// Dev panel routes
 	mux.Handle("GET /v1/dev/services", devMW.Wrap(http.HandlerFunc(devH.HandleListServices)))

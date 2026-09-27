@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -18,7 +20,26 @@ import (
 
 // AdminHandler handles admin-only endpoints.
 type AdminHandler struct {
-	DB *sql.DB
+	DB                *sql.DB
+	EmailerServiceURL string
+	// EmailerInternalSecret is sent as X-Internal-Secret on proxied emailer calls
+	// so the emailer's gated routes (events, bulk-send) accept this trusted,
+	// admin-authenticated gateway.
+	EmailerInternalSecret string
+}
+
+// emailerRequest issues a request to the emailer service with the internal
+// secret header attached. method is GET/POST/etc; body may be nil.
+func (h *AdminHandler) emailerRequest(method, url string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if h.EmailerInternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", h.EmailerInternalSecret)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 // User represents a user in admin responses.
@@ -87,7 +108,7 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
 			limit = parsed
 		}
 	}
@@ -99,35 +120,58 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	search := r.URL.Query().Get("search")
 	searchPattern := "%" + search + "%"
+	roleFilter := r.URL.Query().Get("role") // "admin", "ops", "dev", or ""
 
 	var rows *sql.Rows
 	var err error
 
-	query := `
-		SELECT u.id, u.name, u.email, u.email_verified, u.phone_number, u.phone_number_verified,
-		       u.role, u.banned, u.ban_reason, u.ban_expires, u.created_at, u.updated_at,
-		       up.full_name, up.college, up.year_of_study, up.course
-		FROM "user" u
-		LEFT JOIN user_profile up ON u.id = up.user_id
-	`
-
+	baseJoin := `FROM "user" u LEFT JOIN user_profile up ON u.id = up.user_id`
+	conditions := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
 	if search != "" {
-		query += ` WHERE (
-			u.name ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			u.email ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			u.phone_number ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.full_name ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.college ILIKE $` + strconv.Itoa(argIdx) + ` OR
-			up.course ILIKE $` + strconv.Itoa(argIdx) + `
-		)`
+		conditions = append(conditions, `(
+			u.name ILIKE $`+strconv.Itoa(argIdx)+` OR
+			u.email ILIKE $`+strconv.Itoa(argIdx)+` OR
+			u.phone_number ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.full_name ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.college ILIKE $`+strconv.Itoa(argIdx)+` OR
+			up.course ILIKE $`+strconv.Itoa(argIdx)+`
+		)`)
 		args = append(args, searchPattern)
 		argIdx++
 	}
 
-	query += ` ORDER BY u.created_at DESC LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
+	if roleFilter == "none" {
+		conditions = append(conditions, `u.role IS NULL`)
+	} else if roleFilter != "" {
+		conditions = append(conditions, `u.role = $`+strconv.Itoa(argIdx))
+		args = append(args, roleFilter)
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + conditions[0]
+		for _, c := range conditions[1:] {
+			whereClause += " AND " + c
+		}
+	}
+
+	// Count total matching users
+	var total int
+	countQuery := `SELECT COUNT(*) ` + baseJoin + whereClause
+	if err := h.DB.QueryRowContext(r.Context(), countQuery, args[:argIdx-1]...).Scan(&total); err != nil {
+		slog.Error("failed to count users", "error", err)
+		total = 0
+	}
+
+	query := `SELECT u.id, u.name, u.email, u.email_verified, u.phone_number, u.phone_number_verified,
+		       u.role, u.banned, u.ban_reason, u.ban_expires, u.created_at, u.updated_at,
+		       up.full_name, up.college, up.year_of_study, up.course ` +
+		baseJoin + whereClause +
+		` ORDER BY u.created_at DESC LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
 	args = append(args, limit, offset)
 
 	rows, err = h.DB.QueryContext(r.Context(), query, args...)
@@ -191,6 +235,7 @@ func (h *AdminHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"users":  users,
+		"total":  total,
 		"limit":  limit,
 		"offset": offset,
 	})
@@ -964,4 +1009,250 @@ func (h *AdminHandler) HandleGetDashboardStats(w http.ResponseWriter, r *http.Re
 	}
 
 	WriteJSON(w, http.StatusOK, stats)
+}
+
+// ScheduledEmail represents a row in the scheduled_emails table with user info.
+type ScheduledEmail struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	UserEmail   string     `json:"user_email"`
+	UserName    string     `json:"user_name"`
+	EmailType   string     `json:"email_type"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	SentAt      *time.Time `json:"sent_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// HandleListScheduledEmails handles GET /v1/admin/emails/scheduled.
+// Query params: status=pending|sent (default all), limit, offset, user_id
+func (h *AdminHandler) HandleListScheduledEmails(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	limit := 100
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	status := r.URL.Query().Get("status") // "pending", "sent", or ""
+	userID := r.URL.Query().Get("user_id")
+
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+
+	switch status {
+	case "pending":
+		where += fmt.Sprintf(" AND se.sent_at IS NULL AND se.scheduled_at > NOW()")
+	case "due":
+		where += fmt.Sprintf(" AND se.sent_at IS NULL AND se.scheduled_at <= NOW()")
+	case "sent":
+		where += " AND se.sent_at IS NOT NULL"
+	}
+
+	if userID != "" {
+		where += fmt.Sprintf(" AND se.user_id = $%d", argIdx)
+		args = append(args, userID)
+		argIdx++
+	}
+
+	args = append(args, limit, offset)
+
+	query := fmt.Sprintf(`
+		SELECT
+			se.id,
+			se.user_id,
+			COALESCE(u.email, '') AS user_email,
+			COALESCE(u.name, '') AS user_name,
+			se.email_type,
+			se.scheduled_at,
+			se.sent_at,
+			se.created_at
+		FROM scheduled_emails se
+		LEFT JOIN "user" u ON u.id = se.user_id
+		%s
+		ORDER BY se.scheduled_at ASC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+
+	rows, err := h.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		slog.Error("failed to list scheduled emails", "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to list scheduled emails")
+		return
+	}
+	defer rows.Close()
+
+	emails := []ScheduledEmail{}
+	for rows.Next() {
+		var e ScheduledEmail
+		if err := rows.Scan(&e.ID, &e.UserID, &e.UserEmail, &e.UserName, &e.EmailType, &e.ScheduledAt, &e.SentAt, &e.CreatedAt); err != nil {
+			slog.Error("failed to scan scheduled email", "error", err)
+			continue
+		}
+		emails = append(emails, e)
+	}
+
+	// Count total
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM scheduled_emails se %s`, where)
+	countArgs := args[:len(args)-2] // remove limit/offset
+	var total int
+	if err := h.DB.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		slog.Warn("failed to count scheduled emails", "error", err)
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"emails": emails,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+// HandleCancelScheduledEmail handles DELETE /v1/admin/emails/scheduled/{id}.
+func (h *AdminHandler) HandleCancelScheduledEmail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	if id == "" {
+		WriteError(w, http.StatusBadRequest, "bad_request", "missing id")
+		return
+	}
+
+	result, err := h.DB.ExecContext(ctx,
+		`DELETE FROM scheduled_emails WHERE id = $1 AND sent_at IS NULL`,
+		id,
+	)
+	if err != nil {
+		slog.Error("failed to cancel scheduled email", "id", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to cancel email")
+		return
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		WriteError(w, http.StatusNotFound, "not_found", "email not found or already sent")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// TriggerEmailRequest is the payload for POST /v1/admin/emails/trigger.
+// routing_key: one of event.user.signup, event.resume.optimized, event.internship.applied
+// event: the raw event JSON (e.g. {"user_id":"...", "email":"...", "name":"..."})
+type TriggerEmailRequest struct {
+	RoutingKey string          `json:"routing_key"`
+	Event      json.RawMessage `json:"event"`
+}
+
+// HandleTriggerEmail handles POST /v1/admin/emails/trigger.
+// Forwards the event directly to the emailer-service for immediate processing.
+func (h *AdminHandler) HandleTriggerEmail(w http.ResponseWriter, r *http.Request) {
+	var req TriggerEmailRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if req.RoutingKey == "" {
+		WriteError(w, http.StatusBadRequest, "bad_request", "routing_key is required")
+		return
+	}
+	if len(req.Event) == 0 {
+		WriteError(w, http.StatusBadRequest, "bad_request", "event is required")
+		return
+	}
+
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to marshal request")
+		return
+	}
+
+	resp, err := h.emailerRequest(
+		http.MethodPost,
+		strings.TrimSuffix(emailerURL, "/")+"/v1/email/events",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		slog.Error("failed to call emailer-service", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// HandleBulkSendPreview handles GET /v1/admin/emails/bulk-send/preview.
+// Proxies to emailer-service to get count of users matching filters.
+func (h *AdminHandler) HandleBulkSendPreview(w http.ResponseWriter, r *http.Request) {
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	targetURL := strings.TrimSuffix(emailerURL, "/") + "/v1/email/bulk-send/preview"
+	if q := r.URL.RawQuery; q != "" {
+		targetURL += "?" + q
+	}
+
+	resp, err := h.emailerRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		slog.Error("failed to call emailer-service bulk preview", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// HandleBulkSend handles POST /v1/admin/emails/bulk-send.
+// Proxies to emailer-service to send emails to filtered users.
+func (h *AdminHandler) HandleBulkSend(w http.ResponseWriter, r *http.Request) {
+	emailerURL := h.EmailerServiceURL
+	if emailerURL == "" {
+		emailerURL = "http://emailer-service:8087"
+	}
+
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", "failed to read body")
+		return
+	}
+
+	resp, err := h.emailerRequest(
+		http.MethodPost,
+		strings.TrimSuffix(emailerURL, "/")+"/v1/email/bulk-send",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		slog.Error("failed to call emailer-service bulk send", "error", err)
+		WriteError(w, http.StatusBadGateway, ErrInternal, "emailer service unavailable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
 }
