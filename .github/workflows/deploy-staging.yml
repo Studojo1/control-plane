@@ -1,0 +1,105 @@
+name: Build and Deploy (Staging)
+
+# Staging had no pipeline: its control-plane was a hand-set image from March,
+# three months behind production. This builds the staging branch and deploys
+# it to the staging namespace (studojo.pro).
+
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  REGISTRY: acrstudojo-dhfsdrfhf6a6bbg2.azurecr.io
+  ACR_NAME: acrstudojo
+  SERVICE_NAME: control-plane
+  # Never :latest. Production's workflow owns that tag.
+  IMAGE_TAG: staging-${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: |
+          TOKEN=$(az acr login --name ${{ env.ACR_NAME }} --expose-token --output tsv --query accessToken)
+          docker login ${{ env.REGISTRY }} -u 00000000-0000-0000-0000-000000000000 -p "$TOKEN"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:buildcache
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "latest"
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Refuse to run staging against production data
+        run: |
+          # Staging has its own DB (studojo_staging) and RabbitMQ vhost (staging)
+          # since 2026-09-26. Fail loudly if a secret ever points back at production.
+          for k in database-url rabbitmq-url; do
+            v=$(kubectl get secret app-secrets -n staging -o jsonpath="{.data.$k}" | base64 -d)
+            case "$v" in
+              *postgres.studojo.svc*|*rabbitmq.studojo.svc.cluster.local:5672|*rabbitmq.studojo.svc.cluster.local:5672/)
+                echo "::error::staging app-secrets/$k points at PRODUCTION. Refusing to deploy."; exit 1;;
+            esac
+          done
+          echo "staging secrets point at staging data"
+
+      - name: Match the staging emailer's internal secret
+        run: |
+          # Production's workflow sets EMAILER_INTERNAL_SECRET from the GitHub
+          # secret, which is production's value. Staging's emailer has its own,
+          # so copy it from the staging emailer deployment instead.
+          S=$(kubectl get deployment emailer-service -n staging \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="INTERNAL_SECRET")].value}')
+          if [ -n "$S" ]; then
+            kubectl set env deployment/${{ env.SERVICE_NAME }} -n staging EMAILER_INTERNAL_SECRET="$S" >/dev/null
+            echo "EMAILER_INTERNAL_SECRET set from the staging emailer"
+          else
+            echo "::warning::staging emailer has no literal INTERNAL_SECRET; leaving control-plane unchanged"
+          fi
+
+      - name: Deploy to Kubernetes (staging)
+        run: |
+          kubectl set image deployment/${{ env.SERVICE_NAME }} ${{ env.SERVICE_NAME }}=${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:${{ env.IMAGE_TAG }} -n staging
+          kubectl rollout status deployment/${{ env.SERVICE_NAME }} -n staging --timeout=10m
