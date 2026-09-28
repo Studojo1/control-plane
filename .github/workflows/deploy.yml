@@ -81,6 +81,23 @@ jobs:
           kubectl set env deployment/${{ env.SERVICE_NAME }} -n studojo \
             EMAILER_INTERNAL_SECRET="${{ secrets.EMAILER_INTERNAL_SECRET }}"
 
+      - name: Rate limiter settings (shadow mode)
+        run: |
+          # control-plane's rate limiter needs Redis; REDIS_URL was never set, so
+          # it silently ran disabled. The redis-url secret has no password (Redis
+          # runs with --requirepass), so REDIS_PASSWORD is wired separately.
+          # RATE_LIMIT_MODE=shadow logs would-be blocks without rejecting anyone;
+          # switch to "enforce" only after reviewing those logs.
+          cat > /tmp/rl-env.json <<PATCH
+          {"spec":{"template":{"spec":{"containers":[{"name":"control-plane","env":[
+            {"name":"REDIS_URL","valueFrom":{"secretKeyRef":{"name":"app-secrets","key":"redis-url"}}},
+            {"name":"REDIS_PASSWORD","valueFrom":{"secretKeyRef":{"name":"app-secrets","key":"redis-password"}}},
+            {"name":"RATE_LIMIT_MODE","value":"shadow"},
+            {"name":"RATE_LIMIT_PREFIX","value":"ratelimit"}
+          ]}]}}}}
+          PATCH
+          kubectl patch deployment/control-plane -n studojo --type=strategic --patch-file=/tmp/rl-env.json
+
       - name: Deploy to Kubernetes
         run: |
           kubectl set image deployment/${{ env.SERVICE_NAME }} ${{ env.SERVICE_NAME }}=${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:${{ env.IMAGE_TAG }} -n studojo
