@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -46,10 +47,10 @@ type Handler struct {
 
 // SubmitRequest JSON body for POST /v1/jobs.
 type SubmitRequest struct {
-	Type            string          `json:"type"`
-	Payload         json.RawMessage `json:"payload"`
-	PaymentOrderID  string          `json:"payment_order_id"` // Razorpay order ID - payment must be verified
-	Outline         json.RawMessage `json:"outline,omitempty"` // Pre-generated outline for final generation
+	Type           string          `json:"type"`
+	Payload        json.RawMessage `json:"payload"`
+	PaymentOrderID string          `json:"payment_order_id"`  // Razorpay order ID - payment must be verified
+	Outline        json.RawMessage `json:"outline,omitempty"` // Pre-generated outline for final generation
 }
 
 // OutlineGenerateRequest JSON body for POST /v1/outlines/generate.
@@ -115,7 +116,7 @@ type PaymentVerifyResponse struct {
 
 // PaymentCreateRequest JSON body for POST /v1/payments/create-order.
 type PaymentCreateRequest struct {
-	Amount  int             `json:"amount"`   // Amount in paise (e.g., 13900 for ₹139)
+	Amount  int             `json:"amount"`             // Amount in paise (e.g., 13900 for ₹139)
 	JobType string          `json:"job_type,omitempty"` // Optional: "assignment-gen" or "humanizer" for price calculation
 	Payload json.RawMessage `json:"payload,omitempty"`  // Optional: for humanizer word count estimation
 }
@@ -176,16 +177,16 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "failed to read request body")
 		return
 	}
-	
+
 	// Log raw body for debugging
 	bodyPreview := string(bodyBytes)
 	if len(bodyPreview) > 500 {
 		bodyPreview = bodyPreview[:500] + "..."
 	}
-	slog.Info("received raw request body", 
+	slog.Info("received raw request body",
 		"body_length", len(bodyBytes),
 		"body_preview", bodyPreview)
-	
+
 	// Decode from the bytes we just read
 	var req SubmitRequest
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -193,7 +194,7 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "invalid JSON body")
 		return
 	}
-	
+
 	// Debug logging for payload validation
 	payloadLen := len(req.Payload)
 	var payloadPreview string
@@ -206,16 +207,16 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	} else {
 		payloadPreview = "(empty)"
 	}
-	
-	slog.Info("received job submission request", 
-		"type", req.Type, 
+
+	slog.Info("received job submission request",
+		"type", req.Type,
 		"payload_length", payloadLen,
 		"payload_preview", payloadPreview,
 		"raw_body_has_payload", strings.Contains(string(bodyBytes), `"payload"`))
-	
+
 	if req.Type == "" || len(req.Payload) == 0 {
-		slog.Warn("validation failed: empty type or payload", 
-			"type", req.Type, 
+		slog.Warn("validation failed: empty type or payload",
+			"type", req.Type,
 			"payload_length", len(req.Payload),
 			"payload_preview", payloadPreview,
 			"raw_body_length", len(bodyBytes),
@@ -223,7 +224,7 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "type and payload required")
 		return
 	}
-	
+
 	// For assignment-gen and humanizer types, payment is required. For outline-gen and outline-edit, no payment needed.
 	if req.Type == "assignment-gen" || req.Type == "humanizer" {
 		// Verify payment before creating job
@@ -231,7 +232,7 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusPaymentRequired, ErrPaymentRequired, "payment_order_id is required")
 			return
 		}
-		
+
 		payment, err := h.PaymentStore.GetPaymentByOrderID(r.Context(), req.PaymentOrderID)
 		if err != nil {
 			slog.Error("get payment failed", "error", err)
@@ -250,14 +251,14 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusPaymentRequired, ErrPaymentRequired, fmt.Sprintf("payment status is %s, must be completed", payment.Status))
 			return
 		}
-		
+
 		// Check if payment is already linked to a job (prevent reuse)
 		if payment.JobID != nil {
 			WriteError(w, http.StatusBadRequest, ErrPaymentFailed, "payment has already been used for another job")
 			return
 		}
 	}
-	
+
 	// Merge outline into payload if provided
 	payload := req.Payload
 	if len(req.Outline) > 0 && req.Type == "assignment-gen" {
@@ -267,11 +268,11 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			payload, _ = json.Marshal(payloadMap)
 		}
 	}
-	
+
 	idemKey := r.Header.Get("Idempotency-Key")
 
 	// Log payload before passing to workflow service
-	slog.Info("calling workflow.SubmitJob", 
+	slog.Info("calling workflow.SubmitJob",
 		"type", req.Type,
 		"payload_length", len(payload),
 		"payload_preview", func() string {
@@ -292,7 +293,7 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		h.writeWorkflowError(w, err)
 		return
 	}
-	
+
 	// Link payment to job after job is created (for assignment-gen and humanizer)
 	if req.Type == "assignment-gen" || req.Type == "humanizer" {
 		payment, _ := h.PaymentStore.GetPaymentByOrderID(r.Context(), req.PaymentOrderID)
@@ -306,7 +307,7 @@ func (h *Handler) HandleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	out := SubmitResponse{
 		JobID:     res.JobID,
 		Status:    res.Status,
@@ -337,14 +338,14 @@ func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 		h.writeWorkflowError(w, err)
 		return
 	}
-		out := JobResponseJSON{
-			JobID:     res.JobID,
-			Type:      res.Type,
-			Status:    res.Status,
-			CreatedAt: res.CreatedAt,
-			UpdatedAt: res.UpdatedAt,
-			Result:    res.Result,
-		}
+	out := JobResponseJSON{
+		JobID:     res.JobID,
+		Type:      res.Type,
+		Status:    res.Status,
+		CreatedAt: res.CreatedAt,
+		UpdatedAt: res.UpdatedAt,
+		Result:    res.Result,
+	}
 	if res.Error != nil {
 		out.Error = *res.Error
 	}
@@ -358,33 +359,33 @@ func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnauthorized, ErrUnauthorized, "unauthorized")
 		return
 	}
-	
+
 	// Parse query parameters
 	jobType := r.URL.Query().Get("type")
 	limit := 50 // default
 	offset := 0 // default
-	
+
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		if parsed, err := fmt.Sscanf(limitStr, "%d", &limit); err != nil || parsed != 1 {
 			WriteError(w, http.StatusBadRequest, ErrValidationFailed, "invalid limit parameter")
 			return
 		}
 	}
-	
+
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		if parsed, err := fmt.Sscanf(offsetStr, "%d", &offset); err != nil || parsed != 1 {
 			WriteError(w, http.StatusBadRequest, ErrValidationFailed, "invalid offset parameter")
 			return
 		}
 	}
-	
+
 	jobs, err := h.Workflow.ListJobs(r.Context(), userID, jobType, limit, offset)
 	if err != nil {
 		slog.Error("list jobs failed", "error", err, "user_id", userID)
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to list jobs")
 		return
 	}
-	
+
 	// Convert to JSON response format
 	responses := make([]JobResponseJSON, 0, len(jobs))
 	for _, job := range jobs {
@@ -401,7 +402,7 @@ func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		responses = append(responses, out)
 	}
-	
+
 	WriteJSON(w, http.StatusOK, responses)
 }
 
@@ -422,9 +423,9 @@ func (h *Handler) HandleGenerateOutline(w http.ResponseWriter, r *http.Request) 
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "type and payload required")
 		return
 	}
-	
+
 	idemKey := r.Header.Get("Idempotency-Key")
-	
+
 	wfReq := &workflow.SubmitJobRequest{
 		UserID:         userID,
 		IdempotencyKey: idemKey,
@@ -436,7 +437,7 @@ func (h *Handler) HandleGenerateOutline(w http.ResponseWriter, r *http.Request) 
 		h.writeWorkflowError(w, err)
 		return
 	}
-	
+
 	out := OutlineGenerateResponse{
 		JobID:  res.JobID,
 		Status: res.Status,
@@ -457,7 +458,7 @@ func (h *Handler) HandleGenerateOutline(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
-	
+
 	if res.IsReplay {
 		WriteJSON(w, http.StatusOK, out)
 		return
@@ -482,16 +483,16 @@ func (h *Handler) HandleEditOutline(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusUnprocessableEntity, ErrValidationFailed, "outline and user_message are required")
 		return
 	}
-	
+
 	// Create payload with outline and user message
 	payload := map[string]interface{}{
 		"outline":      json.RawMessage(req.Outline),
 		"user_message": req.UserMessage,
 	}
 	payloadBytes, _ := json.Marshal(payload)
-	
+
 	idemKey := r.Header.Get("Idempotency-Key")
-	
+
 	wfReq := &workflow.SubmitJobRequest{
 		UserID:         userID,
 		IdempotencyKey: idemKey,
@@ -503,7 +504,7 @@ func (h *Handler) HandleEditOutline(w http.ResponseWriter, r *http.Request) {
 		h.writeWorkflowError(w, err)
 		return
 	}
-	
+
 	out := OutlineEditResponse{
 		JobID:  res.JobID,
 		Status: res.Status,
@@ -530,7 +531,7 @@ func (h *Handler) HandleEditOutline(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	if res.IsReplay {
 		WriteJSON(w, http.StatusOK, out)
 		return
@@ -576,7 +577,7 @@ func (h *Handler) HandleCreatePaymentOrder(w http.ResponseWriter, r *http.Reques
 
 	// Detect geo for gateway routing
 	country := geo.DetectCountry(r)
-	useRazorpay := geo.IsIndia(r)
+	useRazorpay := usesRazorpay(country, h.dodoReady())
 
 	slog.Info("creating payment order", "user_id", userID, "amount", req.Amount, "country", country, "provider", map[bool]string{true: "razorpay", false: "dodo"}[useRazorpay])
 
@@ -728,21 +729,21 @@ func (h *Handler) HandleVerifyPayment(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "failed to get payment")
 		return
 	}
-	
+
 	// If payment doesn't exist, create it (Razorpay Checkout created order client-side)
 	if payment == nil {
 		// Create payment record with the order_id from Razorpay
 		// Amount should match what was paid - we'll use a standard amount for assignment-gen
 		payment = &store.Payment{
-			ID:              uuid.New(),
-			UserID:          userID,
-			JobID:           nil,
-			RazorpayOrderID: req.RazorpayOrderID,
+			ID:                uuid.New(),
+			UserID:            userID,
+			JobID:             nil,
+			RazorpayOrderID:   req.RazorpayOrderID,
 			RazorpayPaymentID: nil,
-			Amount:          13900, // ₹139 - standard assignment price
-			Status:          "pending",
-			CreatedAt:       time.Now().UTC(),
-			UpdatedAt:       time.Now().UTC(),
+			Amount:            13900, // ₹139 - standard assignment price
+			Status:            "pending",
+			CreatedAt:         time.Now().UTC(),
+			UpdatedAt:         time.Now().UTC(),
 		}
 		if err := h.PaymentStore.CreatePayment(r.Context(), payment); err != nil {
 			slog.Error("create payment failed", "error", err)
@@ -1006,4 +1007,28 @@ func (h *Handler) writeWorkflowError(w http.ResponseWriter, err error) {
 		slog.Error("workflow error", "error", err)
 		WriteError(w, http.StatusInternalServerError, ErrInternal, "internal error")
 	}
+}
+
+// dodoReady reports whether international checkout can go to Dodo at all:
+// a client, a product to sell, and DODO_TEST_MODE set EXPLICITLY. The client
+// defaults to test mode when that variable is unset, and a test-mode checkout
+// "succeeds" without taking money, so an implicit default in production would
+// give plans away.
+func (h *Handler) dodoReady() bool {
+	return h.DodoClient != nil && h.DodoProductCareer != "" && os.Getenv("DODO_TEST_MODE") != ""
+}
+
+// usesRazorpay picks the gateway. Dodo only for a KNOWN non-Indian country
+// with Dodo fully configured; everything else stays on Razorpay. geo.IsIndia()
+// alone returned false when the country lookup failed ("UNKNOWN"), which sent
+// Indian buyers to Dodo, and to a hard error wherever Dodo is not configured.
+func usesRazorpay(country string, dodoReady bool) bool {
+	if !dodoReady {
+		return true
+	}
+	switch country {
+	case "IN", "", "UNKNOWN":
+		return true
+	}
+	return false
 }
