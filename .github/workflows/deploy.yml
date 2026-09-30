@@ -73,13 +73,21 @@ jobs:
             --name ${{ secrets.AKS_CLUSTER_NAME }} \
             --overwrite-existing
 
-      - name: Ensure emailer internal secret
+      - name: Secrets as secretKeyRef (audit ST-N07)
         run: |
-          # Injected on every proxied emailer call so the emailer's gated routes
-          # accept this trusted gateway. Must match the emailer's INTERNAL_SECRET
-          # (same EMAILER_INTERNAL_SECRET GitHub secret). No-op when unchanged.
-          kubectl set env deployment/${{ env.SERVICE_NAME }} -n studojo \
-            EMAILER_INTERNAL_SECRET="${{ secrets.EMAILER_INTERNAL_SECRET }}"
+          # Secrets reach the pod only as secretKeyRef, never as literal values
+          # in the Deployment spec. scripts/ci/secret_env.sh explains.
+          #
+          # EMAILER_INTERNAL_SECRET is injected on every proxied emailer call so
+          # the emailer's gated routes accept this gateway. It is read from the
+          # same app-secrets key the emailer's INTERNAL_SECRET comes from, so the
+          # two cannot drift (this repo's GitHub secret had drifted, and every
+          # proxied call to a gated route was rejected).
+          export NS=studojo DEP=${{ env.SERVICE_NAME }}
+          . scripts/ci/secret_env.sh
+          secret_ref EMAILER_INTERNAL_SECRET emailer-internal-secret
+          secret_adopt DEPLOYMENT_SECRET deployment-secret
+          secret_audit
 
       - name: Rate limiter settings (shadow mode)
         run: |
