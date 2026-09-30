@@ -89,19 +89,16 @@ jobs:
           done
           echo "staging secrets point at staging data"
 
-      - name: Match the staging emailer's internal secret
+      - name: Secrets as secretKeyRef (audit ST-N07)
         run: |
-          # Production's workflow sets EMAILER_INTERNAL_SECRET from the GitHub
-          # secret, which is production's value. Staging's emailer has its own,
-          # so copy it from the staging emailer deployment instead.
-          S=$(kubectl get deployment emailer-service -n staging \
-            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="INTERNAL_SECRET")].value}')
-          if [ -n "$S" ]; then
-            kubectl set env deployment/${{ env.SERVICE_NAME }} -n staging EMAILER_INTERNAL_SECRET="$S" >/dev/null
-            echo "EMAILER_INTERNAL_SECRET set from the staging emailer"
-          else
-            echo "::warning::staging emailer has no literal INTERNAL_SECRET; leaving control-plane unchanged"
-          fi
+          # The staging emailer's INTERNAL_SECRET comes from the staging
+          # app-secrets key emailer-internal-secret; reference the same key so
+          # the two cannot drift, and keep secrets out of the Deployment spec.
+          export NS=staging DEP=${{ env.SERVICE_NAME }}
+          . scripts/ci/secret_env.sh
+          secret_ref EMAILER_INTERNAL_SECRET emailer-internal-secret
+          secret_adopt DEPLOYMENT_SECRET deployment-secret
+          secret_audit
 
       - name: Rate limiter settings (shadow mode)
         run: |
