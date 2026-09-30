@@ -1,0 +1,110 @@
+# PodDisruptionBudgets for every production workload that runs 2+ replicas
+# (audit IN-N01). minAvailable: 1 keeps one pod serving while AKS drains a
+# node during upgrades. Do NOT add minAvailable: 1 for a single-replica
+# Deployment: it would block node drains forever. Apply with:
+#   kubectl apply -f k8s/cluster/pdbs.yaml
+# Prerequisites (live since 2026-09-30): ingress-nginx-controller replicas=2,
+# HPA frontend minReplicas=2 (see frontend-hpa.yaml).
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/instance: ingress-nginx
+      app.kubernetes.io/name: ingress-nginx
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: job-outreach-svc
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: job-outreach-svc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bob-svc
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: bob-svc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sensei-site
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sensei-site
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sensei-demo-site
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sensei-demo-site
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sensei-elements-site
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sensei-elements-site
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: b2b-api
+  namespace: b2b
+spec:
+  # maxUnavailable, not minAvailable: the KEDA ScaledObject's HPA may scale
+  # b2b-api down to 1 replica, and minAvailable: 1 would then block drains.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: b2b-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: b2b-phone-api
+  namespace: b2b-phone
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: b2b-phone-api
