@@ -57,6 +57,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # The deploy step sources scripts/ci/secret_env.sh from the repo.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
