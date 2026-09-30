@@ -1,0 +1,170 @@
+# Ingress allow-lists for the data stores (audit IN-N06).
+#
+# NOT APPLIED, AND INERT TODAY: studojo-aks runs with networkPolicy=none
+# (az aks show ... networkProfile.networkPolicy), so the cluster ignores
+# NetworkPolicy objects. Enabling an engine (az aks update --network-policy
+# azure|cilium) re-images every node, so it needs a maintenance window. Order:
+#   1. Re-run the consumer inventory below; it can drift.
+#   2. Enable the engine in a window.
+#   3. kubectl apply the staging policy only, verify, then the prod ones.
+#   4. Check consumers: logs, readiness, pg_stat_activity, rabbitmqctl
+#      list_connections, redis CLIENT LIST.
+#   Rollback: kubectl delete -f k8s/cluster/netpol-datastores.yaml
+#
+# Scope: INGRESS on the data-store pods only, allowed per client NAMESPACE.
+# Per-app label lists are too brittle here: many workers, crons, migrate jobs
+# and backups connect only intermittently. Namespaces not listed (agenthire,
+# aks-command, default, keda, cert-manager, ingress-nginx, kube-system) lose access.
+#
+# Consumer inventory, 2026-09-30 (live connections + secrets/configmaps/env):
+#   studojo/postgres : studojo (control-plane, job-outreach-svc, emailer,
+#     cc-backend, revision-svc, frontend, backups...), staging (cc-backend:
+#     careercoach_staging AND the prod "postgres" DB), b2b, b2b-staging,
+#     b2b-phone, b2b-phone-staging, team (plane, outline, teamos)
+#   studojo/bob-postgres : studojo (bob-svc, bob-postgres-backup)
+#   studojo/redis : studojo (frontend, control-plane, autoapply-worker),
+#     staging (frontend, control-plane), b2b, b2b-staging, team
+#   studojo/rabbitmq : studojo (vhost /), staging (vhost staging: control-plane,
+#     emailer, job-outreach-worker, assignment-gen-worker), b2b, b2b-staging
+#   staging/postgres : staging only (backup CronJob runs in staging)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress-allowlist
+  namespace: studojo
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: studojo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b-staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b-phone
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b-phone-staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: team
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bob-postgres-ingress-allowlist
+  namespace: studojo
+spec:
+  podSelector:
+    matchLabels:
+      app: bob-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: studojo
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress-allowlist
+  namespace: studojo
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: studojo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b-staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: team
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ingress-allowlist
+  namespace: studojo
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: studojo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: staging
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: b2b-staging
+      ports:
+        - protocol: TCP
+          port: 5672
+        - protocol: TCP
+          port: 15672
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress-allowlist
+  namespace: staging
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: staging
+      ports:
+        - protocol: TCP
+          port: 5432
