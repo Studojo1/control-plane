@@ -108,3 +108,30 @@ spec:
   selector:
     matchLabels:
       app: b2b-phone-api
+---
+# admin-panel and the staging frontend ran 1 replica and were down ~1.5 min
+# during the 2026-10-01 node drains. Both now run 2 replicas spread across
+# nodes (their deploy workflows enforce it), so a PDB is safe.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: admin-panel
+  namespace: studojo
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: admin-panel
+---
+# staging/frontend serves studojo.pro, which is PRODUCTION for the outreach
+# extension and /crm.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: staging
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend

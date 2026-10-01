@@ -1,0 +1,28 @@
+# ingress-nginx controller availability (live since 2026-10-01).
+#
+# Two replicas (see pdbs.yaml) only help if they sit on different nodes: a
+# node drain took both down when they shared one. The spread constraint keeps
+# them apart, and maxSurge 1 / maxUnavailable 0 starts the new pod before an
+# old one stops. The controller was installed from the upstream manifest, so
+# this is a patch, not a full manifest. To re-apply:
+#
+#   kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
+#     --type=strategic --patch-file k8s/cluster/ingress-nginx-controller.patch.yaml
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/instance: ingress-nginx
+              app.kubernetes.io/name: ingress-nginx

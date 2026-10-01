@@ -1,14 +1,10 @@
 # Ingress allow-lists for the data stores (audit IN-N06).
 #
-# NOT APPLIED, AND INERT TODAY: studojo-aks runs with networkPolicy=none
-# (az aks show ... networkProfile.networkPolicy), so the cluster ignores
-# NetworkPolicy objects. Enabling an engine (az aks update --network-policy
-# azure|cilium) re-images every node, so it needs a maintenance window. Order:
-#   1. Re-run the consumer inventory below; it can drift.
-#   2. Enable the engine in a window.
-#   3. kubectl apply the staging policy only, verify, then the prod ones.
-#   4. Check consumers: logs, readiness, pg_stat_activity, rabbitmqctl
-#      list_connections, redis CLIENT LIST.
+# APPLIED 2026-10-01 in staging and prod. Engine: cilium (studojo-aks
+# networkDataplane=cilium, networkPolicy=cilium, enabled in the same AKS
+# maintenance window). Before changing a policy, re-run the consumer inventory
+# below (it drifts), apply staging first, then check consumers: logs,
+# readiness, pg_stat_activity, rabbitmqctl list_connections, redis CLIENT LIST.
 #   Rollback: kubectl delete -f k8s/cluster/netpol-datastores.yaml
 #
 # Scope: INGRESS on the data-store pods only, allowed per client NAMESPACE.

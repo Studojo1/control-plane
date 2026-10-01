@@ -4,8 +4,10 @@
 # pods onto its node (97% memory on 30 Sep) and a burst there can OOM-kill the
 # primary DB. Raise the request to what it actually uses, with headroom on the limit.
 #
-# NOT APPLIED LIVE: any change to a StatefulSet pod template restarts postgres-0,
-# which is a production DB outage (about 30-90s). Apply only in a maintenance window:
+# APPLIED 2026-10-01 in the AKS maintenance window (postgres-0 restarted once).
+# The live StatefulSet also loads pg_stat_statements (track=top) for query
+# statistics; the args below are the full live list, because a strategic merge
+# replaces the whole args array. To re-apply:
 #
 #   kubectl get sts postgres -n studojo -o yaml > postgres-sts-backup.yaml
 #   kubectl patch sts postgres -n studojo --type=strategic \
@@ -23,6 +25,17 @@ spec:
     spec:
       containers:
         - name: postgres
+          args:
+            - "-c"
+            - "max_connections=300"
+            - "-c"
+            - "shared_buffers=512MB"
+            - "-c"
+            - "superuser_reserved_connections=5"
+            - "-c"
+            - "shared_preload_libraries=pg_stat_statements"
+            - "-c"
+            - "pg_stat_statements.track=top"
           resources:
             requests:
               cpu: 250m
