@@ -1,0 +1,58 @@
+# Restore drill (audit AR-D04): restores the newest DRILL_DB dump from
+# BACKUP_CONTAINER into a throwaway DB on staging Postgres, prints row counts,
+# drops it. Run monthly, rotating DRILL_DB. The prod "postgres" DB restores to
+# ~3.8 GB, which nearly fills the 10 Gi staging volume: check `df` on
+# staging/postgres-0 first, or grow the volume.
+#   kubectl create -f k8s/cluster/postgres-backup/restore-drill-job.yaml
+#   kubectl -n staging logs -f job/<name>
+# Compare with the source DB: the same count query, run on prod read-only.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: restore-drill-
+  namespace: staging
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore-drill
+          image: postgres:16-bookworm
+          command: ["/bin/bash", "-c", "bash /scripts/restore-drill.sh"]
+          env:
+            - name: DRILL_DB
+              value: careercoach
+            - name: BACKUP_CONTAINER
+              value: postgres-backups
+            - name: AZURE_STORAGE_ACCOUNT_NAME
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_NAME}
+            - name: AZURE_STORAGE_ACCOUNT_KEY
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_KEY}
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_HOST}
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PORT}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_USER}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PASSWORD}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: postgres-backup-script

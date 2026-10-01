@@ -20,3 +20,5 @@ jobs:
       # Deploy workflows never write a secret into a Deployment as a literal
       # env value (audit ST-N07).
       - run: bash scripts/ci/check_no_literal_secrets.sh
+      # Postgres backup job: dumps every database, pg16 client, safe prune (AR-D04).
+      - run: python3 -m unittest discover -s k8s/cluster/postgres-backup -v
