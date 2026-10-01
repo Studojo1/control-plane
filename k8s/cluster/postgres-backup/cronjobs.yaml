@@ -1,0 +1,205 @@
+# Nightly Postgres backups to Azure Blob (studojostorage), audit AR-D04.
+# Every database on each server is dumped (backup.sh), not just "postgres".
+#
+#   studojo/postgres-backup      02:00 UTC  postgres.studojo      -> postgres-backups
+#   studojo/bob-postgres-backup  02:15 UTC  bob-postgres.studojo  -> bob-postgres-backups
+#   staging/postgres-backup      02:30 UTC  postgres.staging      -> postgres-backups-staging
+#
+# Apply (script ConfigMap first, in both namespaces):
+#   for ns in studojo staging; do
+#     kubectl -n $ns create configmap postgres-backup-script \
+#       --from-file=k8s/cluster/postgres-backup/backup.sh \
+#       --from-file=k8s/cluster/postgres-backup/blob.py \
+#       --from-file=k8s/cluster/postgres-backup/restore-drill.sh \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#   done
+#   kubectl apply -f k8s/cluster/postgres-backup/cronjobs.yaml
+# Manual run: kubectl -n studojo create job --from=cronjob/postgres-backup pgb-manual-$(date +%s)
+#
+# Secrets (not in git): postgres-backup-secret in studojo and staging
+# (AZURE_STORAGE_ACCOUNT_NAME/KEY, POSTGRES_HOST/PORT/USER/PASSWORD), bob-db in studojo.
+# NetworkPolicies (netpol-datastores.yaml): each job runs in a namespace its
+# server allows (studojo -> studojo/postgres + bob-postgres, staging -> staging/postgres).
+#
+# Storage-side protection (applied 2026-10-01 with az, not in this file):
+#   studojostorage: blob soft delete 14 d, container soft delete 14 d, versioning on,
+#   lifecycle: backup containers delete base blobs > 30 d (matches the job's prune),
+#   previous versions > 30 d; account replication Standard_GRS (secondary: South India);
+#   the three backup containers carry an UNLOCKED time-based immutability policy of
+#   29 days, so the account key held in the cluster cannot delete a backup younger
+#   than that (the job prunes at 30 d). Rollback, per container:
+#     az storage container immutability-policy delete --account-name studojostorage \
+#       -g rg-studojo -c <container> --if-match "$(az storage container \
+#       immutability-policy show --account-name studojostorage -g rg-studojo \
+#       -c <container> --query etag -o tsv)"
+#   Restore drill: restore-drill-job.yaml (2026-10-01: careercoach, 14 tables, counts
+#   matched prod).
+#
+# Restore one database (plain SQL, --no-owner --no-acl):
+#   az storage blob download --account-name studojostorage -c postgres-backups \
+#     -n careercoach/careercoach-<ts>.sql.gz -f - | gunzip | psql -d <new empty db>
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: studojo
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: postgres-backup
+              image: postgres:16-bookworm
+              command: ["/bin/bash", "-c", "bash /scripts/backup.sh"]
+              env:
+                - name: BACKUP_CONTAINER
+                  value: postgres-backups
+                - name: RETENTION_DAYS
+                  value: "30"
+                - name: AZURE_STORAGE_ACCOUNT_NAME
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_NAME}
+                - name: AZURE_STORAGE_ACCOUNT_KEY
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_KEY}
+                - name: POSTGRES_HOST
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_HOST}
+                - name: POSTGRES_PORT
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PORT}
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_USER}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PASSWORD}
+              resources:
+                requests: {cpu: 100m, memory: 512Mi, ephemeral-storage: 2Gi}
+                limits: {cpu: "1", memory: 2Gi}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: postgres-backup-script
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bob-postgres-backup
+  namespace: studojo
+spec:
+  schedule: "15 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: postgres-backup
+              image: postgres:16-bookworm
+              command: ["/bin/bash", "-c", "bash /scripts/backup.sh"]
+              env:
+                - name: BACKUP_CONTAINER
+                  value: bob-postgres-backups
+                - name: RETENTION_DAYS
+                  value: "30"
+                - name: AZURE_STORAGE_ACCOUNT_NAME
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_NAME}
+                - name: AZURE_STORAGE_ACCOUNT_KEY
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_KEY}
+                - name: POSTGRES_HOST
+                  value: bob-postgres.studojo.svc.cluster.local
+                - name: POSTGRES_PORT
+                  value: "5432"
+                - name: POSTGRES_USER
+                  value: studojo
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: bob-db, key: postgres-password}
+              resources:
+                requests: {cpu: 100m, memory: 512Mi, ephemeral-storage: 2Gi}
+                limits: {cpu: "1", memory: 2Gi}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: postgres-backup-script
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: staging
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: postgres-backup
+              image: postgres:16-bookworm
+              command: ["/bin/bash", "-c", "bash /scripts/backup.sh"]
+              env:
+                - name: BACKUP_CONTAINER
+                  value: postgres-backups-staging
+                - name: RETENTION_DAYS
+                  value: "30"
+                - name: AZURE_STORAGE_ACCOUNT_NAME
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_NAME}
+                - name: AZURE_STORAGE_ACCOUNT_KEY
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: AZURE_STORAGE_ACCOUNT_KEY}
+                - name: POSTGRES_HOST
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_HOST}
+                - name: POSTGRES_PORT
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PORT}
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_USER}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: postgres-backup-secret, key: POSTGRES_PASSWORD}
+              resources:
+                requests: {cpu: 100m, memory: 512Mi, ephemeral-storage: 2Gi}
+                limits: {cpu: "1", memory: 2Gi}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: postgres-backup-script
